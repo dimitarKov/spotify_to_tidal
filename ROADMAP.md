@@ -36,7 +36,7 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
   - Fix: enable WAL mode + busy timeout on the engine (or serialise writes through a lock).
 - [x] **B7. Failure back-off never grows.** `cache_match_failure` calls `_get_next_retry_time()` without `insert_time`, so re-failures always wait 7 days instead of doubling.
   - Fix: pass the existing row's `insert_time`; add a test.
-- [ ] **B8. Rate limiter can over-release.** `_run_rate_limiter` calls `Semaphore.release()` without a cap, so after idle periods bursts exceed `max_concurrency`.
+- [x] **B8. Rate limiter can over-release.** `_run_rate_limiter` calls `Semaphore.release()` without a cap, so after idle periods bursts exceed `max_concurrency`.
   - Fix: only release up to the configured capacity.
 - [ ] **B9. Spotify login error message broken.** `auth.py` `.format()` without `{}`; `requests_timeout=2` is too aggressive (raise to ~10).
 - [ ] **B10. "songs not found.txt" gets empty headers.** Only write the playlist header when there are missing songs.
