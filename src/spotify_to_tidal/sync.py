@@ -5,6 +5,7 @@ from .cache import failure_cache, track_match_cache
 from difflib import SequenceMatcher
 from typing import Any, Awaitable, Callable, List, Mapping, Optional, ParamSpec, Sequence, Set, Tuple, TypeVar, cast
 import math
+import re
 import requests
 import sys
 import spotipy
@@ -42,6 +43,15 @@ def simple_artist(artist_name: str) -> str:
     name = artist_name.split('(')[0].split('[')[0]
     return ' '.join(name.lower().replace('-', ' ').split())
 
+def title_key(title: str, simplify: bool = True) -> str:
+    """ Normalises a track title for comparison: drops version suffixes ('- Remastered', '(Live)') and 'feat.',
+        accents, punctuation, case and extra whitespace. Letters in any script are kept """
+    title = title.lower()
+    if simplify:
+        title = simple(title).split('feat.')[0]
+    without_accents = ''.join(c for c in unicodedata.normalize('NFD', title) if unicodedata.category(c) != 'Mn')
+    return ' '.join(re.sub(r'[^\w\s]', '', without_accents).split())
+
 def isrc_match(tidal_track: Track, spotify_track: SpotifyTrack) -> bool:
     external_ids = spotify_track.get("external_ids", {})
     if "isrc" in external_ids:
@@ -63,10 +73,15 @@ def name_match(tidal_track: Track, spotify_track: SpotifyTrack) -> bool:
     if exclusion_rule("acapella", tidal_track, spotify_track): return False
     if exclusion_rule("remix", tidal_track, spotify_track): return False
 
-    # the simplified version of the Spotify track name must be a substring of the Tidal track name
-    # Try with both un-normalized and then normalized
-    simple_spotify_track = simple(spotify_track['name'].lower()).split('feat.')[0].strip()
-    return simple_spotify_track in tidal_track.name.lower() or normalize(simple_spotify_track) in normalize(tidal_track.name.lower())
+    # the simplified titles must be equal, e.g. 'Song - 2011 Remaster' == 'Song (Remastered)' but not 'Different Song'
+    spotify_key, tidal_key = title_key(spotify_track['name']), title_key(tidal_track.name)
+    if not spotify_key:
+        # nothing left after simplifying, e.g. '(Untitled)': compare the whole titles instead
+        spotify_key, tidal_key = title_key(spotify_track['name'], simplify=False), title_key(tidal_track.name, simplify=False)
+    if not spotify_key:
+        # only punctuation, e.g. '?'
+        return spotify_track['name'].strip() == tidal_track.name.strip()
+    return spotify_key == tidal_key
 
 def artist_match(tidal: Track | Album, spotify: SpotifyTrack | SpotifyAlbum) -> bool:
     def split_artist_name(artist: str) -> Sequence[str]:

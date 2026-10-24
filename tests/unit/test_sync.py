@@ -430,3 +430,53 @@ def test_search_query_uses_full_artist_name(failure_cache: mock.Mock):
     run_tidal_search(spotify_track, session)
     queries = [call.args[0] for call in session.search.call_args_list]
     assert queries == ["Album Ken-Y", "Song Ken-Y"]
+
+
+# Test title matching (I4)
+@pytest.mark.parametrize("title, expected", [
+    ("Song", "song"),
+    ("Song - 2011 Remaster", "song"),
+    ("Song (Live at Wembley)", "song"),
+    ("Song [Radio Edit]", "song"),
+    ("Song feat. Someone", "song"),
+    ("Don't Stop", "dont stop"),
+    ("Don’t Stop", "dont stop"),  # curly apostrophe
+    ("Café  del   Mar", "cafe del mar"),
+    ("Остров", "остров"),  # non-Latin letters are kept
+    ("夜に駆ける", "夜に駆ける"),
+])
+def test_title_key(title: str, expected: str):
+    assert _sync.title_key(title) == expected
+
+
+def tidal_titled(name: str, version: str | None = None) -> Any:
+    return SimpleNamespace(name=name, version=version)
+
+
+def spotify_titled(name: str) -> SpotifyTrack:
+    return make_track("a", name=name)
+
+
+@pytest.mark.parametrize("spotify_title, tidal_title, expected", [
+    ("Song", "Song", True),
+    ("Song - 2011 Remaster", "Song (Remastered)", True),
+    ("Song", "Song (feat. Someone)", True),
+    ("Don’t Stop", "Don't Stop", True),
+    ("Остров", "Остров", True),
+    ("Song", "Different Song", False),  # used to match: substring
+    ("Home", "Home Again", False),  # used to match: substring
+    ("Intro", "Introduction", False),
+    ("Остров", "Город", False),  # used to match: both normalised to '' and '' in '' is True
+    ("(Untitled)", "(Untitled)", True),  # nothing left after simplifying: compare whole titles
+    ("(Untitled)", "(Another)", False),
+    ("?", "?", True),  # punctuation only
+    ("?", "!", False),
+])
+def test_name_match(spotify_title: str, tidal_title: str, expected: bool):
+    assert _sync.name_match(tidal_titled(tidal_title), spotify_titled(spotify_title)) is expected
+
+
+def test_name_match_keeps_exclusion_rules():
+    assert _sync.name_match(tidal_titled("Song", version="Remix"), spotify_titled("Song")) is False
+    assert _sync.name_match(tidal_titled("Song (Instrumental)"), spotify_titled("Song")) is False
+    assert _sync.name_match(tidal_titled("Song (Remix)"), spotify_titled("Song - Remix")) is True
