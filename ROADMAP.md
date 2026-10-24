@@ -27,7 +27,7 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
   - Fix: on 412 only — refresh playlist/ETag, exponential back-off, retry up to 5 times; build headers inside the retried call.
 - [x] **B4. Unavailable Tidal album crashes the search.** `album.tracks()` can raise `ObjectNotFound`; the `assert` in `_search_for_track_in_album` can fire.
   - Fix: catch `ObjectNotFound` per album and move on; replace the `assert` with `continue`.
-- [ ] **B5. Race condition in parallel Tidal pagination.** `_get_all_chunks` mutates one shared `params` dict across threads → wrong offsets → duplicate/missing tracks. Also a mutable default argument.
+- [x] **B5. Race condition in parallel Tidal pagination.** `_get_all_chunks` mutates one shared `params` dict across threads → wrong offsets → duplicate/missing tracks. Also a mutable default argument.
   - Fix: `new_params = {**params, 'offset': offset}`; default `params=None`.
 
 ## Phase 2 — Reliability
