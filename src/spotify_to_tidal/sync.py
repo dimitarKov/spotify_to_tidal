@@ -2,7 +2,6 @@
 
 import asyncio
 from .cache import failure_cache, track_match_cache
-import datetime
 from difflib import SequenceMatcher
 from typing import Any, Awaitable, Callable, List, Mapping, Optional, ParamSpec, Sequence, Set, Tuple, TypeVar, cast
 import math
@@ -17,6 +16,7 @@ from tidalapi.session import Session
 from tidalapi.user import LoggedInUser
 from .tidalapi_patch import add_multiple_tracks_to_playlist, clear_tidal_playlist, get_all_favorites, get_all_playlists, get_all_playlist_tracks
 from .progress import gather_with_progress
+from .rate_limiter import RateLimiter
 from tqdm import tqdm
 import traceback
 import unicodedata
@@ -103,7 +103,7 @@ def match(tidal_track: Track, spotify_track: SpotifyTrack) -> bool:
 def test_album_similarity(spotify_album: SpotifyAlbum, tidal_album: Album, threshold: float=0.6) -> bool:
     return SequenceMatcher(None, simple(spotify_album['name']), simple(tidal_album.name or '')).ratio() >= threshold and artist_match(tidal_album, spotify_album)
 
-async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: asyncio.Semaphore, tidal_session: Session) -> Track | None:
+async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, tidal_session: Session) -> Track | None:
     spotify_id = spotify_track['id']
     if spotify_id is None:
         return None
@@ -327,19 +327,6 @@ def get_tracks_for_new_tidal_playlist(spotify_tracks: Sequence[SpotifyTrack]) ->
 
 async def search_new_tracks_on_tidal(tidal_session: Session, spotify_tracks: Sequence[SpotifyTrack], playlist_name: str, config: SyncConfig):
     """ Generic function for searching for each item in a list of Spotify tracks which have not already been seen and adding them to the cache """
-    async def _run_rate_limiter(semaphore: asyncio.Semaphore):
-        ''' Leaky bucket algorithm for rate limiting. Periodically releases items from semaphore at rate_limit'''
-        _sleep_time = config.get('max_concurrency', 10)/config.get('rate_limit', 10)/4 # aim to sleep approx time to drain 1/4 of 'bucket'
-        t0 = datetime.datetime.now()
-        while True:
-            await asyncio.sleep(_sleep_time)
-            t = datetime.datetime.now()
-            dt = (t - t0).total_seconds()
-            new_items = round(config.get('rate_limit', 10)*dt)
-            t0 = t
-            for _ in range(new_items): # leak new_items from the 'bucket'
-                semaphore.release()
-
     # Extract the new tracks that do not already exist in the old tidal tracklist
     tracks_to_search = get_new_spotify_tracks(spotify_tracks)
     if not tracks_to_search:
@@ -347,10 +334,8 @@ async def search_new_tracks_on_tidal(tidal_session: Session, spotify_tracks: Seq
 
     # Search for each of the tracks on Tidal concurrently
     task_description = "Searching Tidal for {}/{} tracks in Spotify playlist '{}'".format(len(tracks_to_search), len(spotify_tracks), playlist_name)
-    semaphore = asyncio.Semaphore(config.get('max_concurrency', 10))
-    rate_limiter_task = asyncio.create_task(_run_rate_limiter(semaphore))
-    search_results = await gather_with_progress([ repeat_on_request_error(tidal_search, t, semaphore, tidal_session) for t in tracks_to_search ], desc=task_description )
-    rate_limiter_task.cancel()
+    rate_limiter = RateLimiter(rate=config.get('rate_limit', 10), capacity=config.get('max_concurrency', 10))
+    search_results = await gather_with_progress([ repeat_on_request_error(tidal_search, t, rate_limiter, tidal_session) for t in tracks_to_search ], desc=task_description )
 
     # Add the search results to the cache
     song404: List[str] = []

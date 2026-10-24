@@ -12,6 +12,7 @@ from tidalapi.exceptions import TooManyRequests
 
 from spotify_to_tidal import sync as _sync
 from spotify_to_tidal.sync import _extract_track, _is_transient_error, get_tracks_from_spotify_playlist, repeat_on_request_error
+from spotify_to_tidal.rate_limiter import RateLimiter
 from spotify_to_tidal.type import SpotifyPlaylist, SpotifyTrack, SyncConfig
 
 
@@ -261,7 +262,7 @@ def failure_cache(mocker: MockerFixture) -> mock.Mock:
 
 
 def run_tidal_search(spotify_track: SpotifyTrack, session: mock.Mock) -> Track | None:
-    return asyncio.run(_sync.tidal_search(spotify_track, asyncio.Semaphore(10), session))
+    return asyncio.run(_sync.tidal_search(spotify_track, RateLimiter(rate=10, capacity=10), session))
 
 
 def test_tidal_search_skips_unavailable_album(failure_cache: mock.Mock):
