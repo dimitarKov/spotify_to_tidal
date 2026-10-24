@@ -1,7 +1,15 @@
 import datetime
 import sqlalchemy
-from sqlalchemy import Table, Column, String, DateTime, MetaData, insert, select, update, delete
-from typing import Dict
+from sqlalchemy import Table, Column, String, DateTime, MetaData, event, select, delete
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from typing import Any, Dict
+
+
+def _enable_write_ahead_log(dbapi_connection: Any, connection_record: Any):
+    """ In WAL mode readers don't block the writer (and vice versa), so concurrent searches don't lock each other out """
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.close()
 
 
 class MatchFailureDatabase:
@@ -11,7 +19,9 @@ class MatchFailureDatabase:
     """
 
     def __init__(self, filename: str = '.cache.db'):
-        self.engine = sqlalchemy.create_engine(f"sqlite:///{filename}")
+        # wait up to 30s for another connection's write lock instead of failing with "database is locked"
+        self.engine = sqlalchemy.create_engine(f"sqlite:///{filename}", connect_args={"timeout": 30})
+        event.listen(self.engine, "connect", _enable_write_ahead_log)
         meta = MetaData()
         self.match_failures = Table('match_failures', meta,
                                     Column('track_id', String,
@@ -31,20 +41,15 @@ class MatchFailureDatabase:
 
     def cache_match_failure(self, track_id: str):
         """ notifies that matching failed for the given track_id """
-        fetch_statement = select(self.match_failures).where(
-            self.match_failures.c.track_id == track_id)
+        # Either update the next_retry time if track_id already exists, otherwise create a new entry.
+        # A single upsert statement, so concurrent callers can't both insert the same track_id
+        next_retry = self._get_next_retry_time()
+        statement = sqlite_insert(self.match_failures).values(
+            track_id=track_id, insert_time=datetime.datetime.now(), next_retry=next_retry
+        ).on_conflict_do_update(index_elements=[self.match_failures.c.track_id], set_={"next_retry": next_retry})
         with self.engine.connect() as connection:
             with connection.begin():
-                # Either update the next_retry time if track_id already exists, otherwise create a new entry
-                existing_failure = connection.execute(
-                    fetch_statement).fetchone()
-                if existing_failure:
-                    update_statement = update(self.match_failures).where(
-                        self.match_failures.c.track_id == track_id).values(next_retry=self._get_next_retry_time())
-                    connection.execute(update_statement)
-                else:
-                    connection.execute(insert(self.match_failures), {
-                                       "track_id": track_id, "insert_time": datetime.datetime.now(), "next_retry": self._get_next_retry_time()})
+                connection.execute(statement)
 
     def has_match_failure(self, track_id: str) -> bool:
         """ checks if there was a recent search for which matching failed with the given track_id """
