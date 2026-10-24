@@ -9,7 +9,7 @@ import requests
 import sys
 import spotipy
 from tidalapi.album import Album
-from tidalapi.exceptions import ObjectNotFound, TooManyRequests
+from tidalapi.exceptions import InvalidISRC, ObjectNotFound, TooManyRequests
 from tidalapi.media import Track
 from tidalapi.playlist import Playlist, UserPlaylist
 from tidalapi.session import Session
@@ -103,10 +103,52 @@ def match(tidal_track: Track, spotify_track: SpotifyTrack) -> bool:
 def test_album_similarity(spotify_album: SpotifyAlbum, tidal_album: Album, threshold: float=0.6) -> bool:
     return SequenceMatcher(None, simple(spotify_album['name']), simple(tidal_album.name or '')).ratio() >= threshold and artist_match(tidal_album, spotify_album)
 
-async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, tidal_session: Session) -> Track | None:
+class IsrcLookup:
+    """ Looks tracks up on Tidal by ISRC, which identifies a recording exactly.
+        Best effort: tidalapi reports every HTTP error from this endpoint as InvalidISRC, including the endpoint
+        being unavailable to our session, so after repeated consecutive errors stop trying for the rest of the run
+        rather than wasting a request per track """
+
+    MAX_CONSECUTIVE_ERRORS = 5
+
+    def __init__(self, tidal_session: Session):
+        self._tidal_session = tidal_session
+        self._consecutive_errors = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self._consecutive_errors < self.MAX_CONSECUTIVE_ERRORS
+
+    async def find(self, isrc: str) -> List[Track]:
+        if not self.enabled:
+            return []
+        try:
+            tracks = await asyncio.to_thread(self._tidal_session.get_tracks_by_isrc, isrc)
+        except ObjectNotFound: # no track with this ISRC
+            self._consecutive_errors = 0
+            return []
+        except InvalidISRC:
+            self._consecutive_errors += 1
+            if not self.enabled:
+                print(f"Tidal ISRC lookup failed {self._consecutive_errors} times in a row, falling back to text search only")
+            return []
+        self._consecutive_errors = 0
+        return tracks
+
+async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, tidal_session: Session, isrc_lookup: IsrcLookup | None = None) -> Track | None:
     spotify_id = spotify_track['id']
     if spotify_id is None:
         return None
+
+    async def _search_by_isrc() -> Track | None:
+        isrc = spotify_track.get('external_ids', {}).get('isrc')
+        if isrc_lookup is None or not isrc_lookup.enabled or not isrc:
+            return None
+        await rate_limiter.acquire()
+        for track in await isrc_lookup.find(isrc):
+            if track.available and match(track, spotify_track):
+                failure_cache.remove_match_failure(spotify_id)
+                return track
 
     def _search_for_track_in_album() -> Track | None:
         # search for album name and first album artist
@@ -134,6 +176,9 @@ async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, t
             if match(track, spotify_track):
                 failure_cache.remove_match_failure(spotify_id)
                 return track
+    isrc_search = await _search_by_isrc()
+    if isrc_search:
+        return isrc_search
     await rate_limiter.acquire()
     album_search = await asyncio.to_thread( _search_for_track_in_album )
     if album_search:
@@ -335,7 +380,8 @@ async def search_new_tracks_on_tidal(tidal_session: Session, spotify_tracks: Seq
     # Search for each of the tracks on Tidal concurrently
     task_description = "Searching Tidal for {}/{} tracks in Spotify playlist '{}'".format(len(tracks_to_search), len(spotify_tracks), playlist_name)
     rate_limiter = RateLimiter(rate=config.get('rate_limit', 10), capacity=config.get('max_concurrency', 10))
-    search_results = await gather_with_progress([ repeat_on_request_error(tidal_search, t, rate_limiter, tidal_session) for t in tracks_to_search ], desc=task_description )
+    isrc_lookup = IsrcLookup(tidal_session)
+    search_results = await gather_with_progress([ repeat_on_request_error(tidal_search, t, rate_limiter, tidal_session, isrc_lookup) for t in tracks_to_search ], desc=task_description )
 
     # Add the search results to the cache
     song404: List[str] = []

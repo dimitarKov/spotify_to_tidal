@@ -233,12 +233,13 @@ def test_other_spotify_errors_still_abort(mocker: MockerFixture):
 # Test tidal_search
 from types import SimpleNamespace
 from tidalapi.album import Album
-from tidalapi.exceptions import ObjectNotFound
+from tidalapi.exceptions import InvalidISRC, ObjectNotFound
 from tidalapi.media import Track
 
 
-def tidal_track(isrc: str, name: str = "Song") -> SimpleNamespace:
-    return SimpleNamespace(isrc=isrc, id=hash(isrc), name=name, version=None, duration=180, artists=[SimpleNamespace(name="Artist")])
+def tidal_track(isrc: str, name: str = "Song", available: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(isrc=isrc, id=hash(isrc), name=name, version=None, duration=180, available=available,
+                           artists=[SimpleNamespace(name="Artist")])
 
 
 def tidal_album(num_tracks: int, tracks: List[SimpleNamespace] | Exception) -> SimpleNamespace:
@@ -262,8 +263,8 @@ def failure_cache(mocker: MockerFixture) -> mock.Mock:
     return mocker.patch.object(_sync, "failure_cache")
 
 
-def run_tidal_search(spotify_track: SpotifyTrack, session: mock.Mock) -> Track | None:
-    return asyncio.run(_sync.tidal_search(spotify_track, RateLimiter(rate=10, capacity=10), session))
+def run_tidal_search(spotify_track: SpotifyTrack, session: mock.Mock, isrc_lookup: _sync.IsrcLookup | None = None) -> Track | None:
+    return asyncio.run(_sync.tidal_search(spotify_track, RateLimiter(rate=10, capacity=10), session, isrc_lookup))
 
 
 def test_tidal_search_skips_unavailable_album(failure_cache: mock.Mock):
@@ -324,3 +325,64 @@ def test_not_found_file_lists_missing_tracks(mocker: MockerFixture, in_tmp_dir: 
 def test_not_found_file_not_written_when_everything_is_found(mocker: MockerFixture, in_tmp_dir: Path):
     run_search_new_tracks(mocker, found={"a": SimpleNamespace(id=1)}, tracks=[make_track("a")])
     assert not (in_tmp_dir / "songs not found.txt").exists()
+
+
+# Test ISRC lookup (I1)
+def test_tidal_search_finds_track_by_isrc_without_text_search(failure_cache: mock.Mock):
+    wanted = tidal_track("ISRCa", name="Spelled Differently On Tidal")
+    session = fake_tidal_session(albums=[], tracks=[])
+    session.get_tracks_by_isrc.return_value = [wanted]
+    assert run_tidal_search(make_track("a"), session, _sync.IsrcLookup(session)) is wanted
+    session.get_tracks_by_isrc.assert_called_once_with("ISRCa")
+    session.search.assert_not_called()
+    failure_cache.remove_match_failure.assert_called_once_with("a")
+
+
+def test_tidal_search_prefers_available_isrc_result(failure_cache: mock.Mock):
+    unavailable, available = tidal_track("ISRCa", available=False), tidal_track("ISRCa")
+    session = fake_tidal_session(albums=[], tracks=[])
+    session.get_tracks_by_isrc.return_value = [unavailable, available]
+    assert run_tidal_search(make_track("a"), session, _sync.IsrcLookup(session)) is available
+
+
+@pytest.mark.parametrize("isrc_result", [
+    [tidal_track("ISRCa", available=False)],  # only unavailable results
+    ObjectNotFound(),  # tidalapi raises this when no track has the ISRC
+    InvalidISRC(),  # any HTTP error from the endpoint
+])
+def test_tidal_search_falls_back_to_text_search(failure_cache: mock.Mock, isrc_result: List[SimpleNamespace] | Exception):
+    wanted = tidal_track("ISRCa")
+    session = fake_tidal_session(albums=[], tracks=[wanted])
+    # an exception is raised; a list of return values is returned one call at a time
+    session.get_tracks_by_isrc.side_effect = isrc_result if isinstance(isrc_result, Exception) else [isrc_result]
+    assert run_tidal_search(make_track("a"), session, _sync.IsrcLookup(session)) is wanted
+    session.search.assert_called()
+
+
+def test_tidal_search_skips_isrc_lookup_without_isrc(failure_cache: mock.Mock):
+    spotify_track = make_track("a")
+    del spotify_track["external_ids"]
+    wanted = tidal_track("other")
+    session = fake_tidal_session(albums=[], tracks=[wanted])
+    assert run_tidal_search(spotify_track, session, _sync.IsrcLookup(session)) is wanted
+    session.get_tracks_by_isrc.assert_not_called()
+
+
+def test_isrc_lookup_disables_itself_after_repeated_errors():
+    session = mock.Mock()
+    session.get_tracks_by_isrc.side_effect = InvalidISRC()
+    lookup = _sync.IsrcLookup(session)
+    for _ in range(_sync.IsrcLookup.MAX_CONSECUTIVE_ERRORS + 3):
+        assert asyncio.run(lookup.find("ISRC")) == []
+    assert not lookup.enabled
+    assert session.get_tracks_by_isrc.call_count == _sync.IsrcLookup.MAX_CONSECUTIVE_ERRORS
+
+
+def test_isrc_lookup_error_count_resets_on_success():
+    session = mock.Mock()
+    errors = [InvalidISRC()] * (_sync.IsrcLookup.MAX_CONSECUTIVE_ERRORS - 1)
+    session.get_tracks_by_isrc.side_effect = errors + [[]] + errors
+    lookup = _sync.IsrcLookup(session)
+    for _ in range(2 * len(errors) + 1):
+        asyncio.run(lookup.find("ISRC"))
+    assert lookup.enabled
