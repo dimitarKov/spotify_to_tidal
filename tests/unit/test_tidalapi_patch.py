@@ -1,12 +1,15 @@
 # tests/unit/test_tidalapi_patch.py
+# pyright: reportPrivateUsage=false
 
+import asyncio
 import pytest
 import requests
-from typing import Dict, List, Mapping, Sequence, Tuple, cast
+from typing import Any, Dict, List, Mapping, Sequence, Tuple, cast
+from unittest import mock
 from pytest_mock import MockerFixture
 from tidalapi.playlist import UserPlaylist
 
-from spotify_to_tidal.tidalapi_patch import add_multiple_tracks_to_playlist, clear_tidal_playlist
+from spotify_to_tidal.tidalapi_patch import _get_all_chunks, add_multiple_tracks_to_playlist, clear_tidal_playlist
 
 
 def http_error(status: int) -> requests.HTTPError:
@@ -117,3 +120,40 @@ def test_clear_in_chunks(sleeps: List[float]):
     assert playlist.num_tracks == 0
     assert len(playlist.deletes) == 3
     assert sleeps == []
+
+
+# Test _get_all_chunks
+
+
+def fake_paged_session(total: int) -> tuple[mock.Mock, List[Mapping[str, Any]]]:
+    """ Session whose endpoint serves items 0..total-1, 10 per page. Records the params object of every request """
+    requested: List[Mapping[str, Any]] = []
+
+    def map_request(url: str, params: Mapping[str, Any]) -> Dict[str, Any]:
+        requested.append(params)  # keep the object itself, to detect it being mutated later
+        offset = params['offset']
+        return {'limit': 10, 'totalNumberOfItems': total, 'items': list(range(offset, min(offset + 10, total)))}
+
+    def map_json(json_obj: Dict[str, Any], parse: Any) -> List[Any]:
+        return [parse(item) for item in json_obj['items']]
+
+    session = mock.Mock()
+    session.request.map_request.side_effect = map_request
+    session.request.map_json.side_effect = map_json
+    return session, requested
+
+
+def test_get_all_chunks_fetches_every_page_once():
+    session, requested = fake_paged_session(total=35)
+    items = asyncio.run(_get_all_chunks("url", session, parser=lambda item: item, params={'limit': 10}))
+    assert sorted(items) == list(range(35))
+    # each request must keep its own offset; a shared, mutated params dict would show the same offset everywhere
+    assert sorted(params['offset'] for params in requested) == [0, 10, 20, 30]
+    assert all(params['limit'] == 10 for params in requested)
+
+
+def test_get_all_chunks_does_not_modify_callers_params():
+    session, _ = fake_paged_session(total=15)
+    params = {'limit': 10}
+    asyncio.run(_get_all_chunks("url", session, parser=lambda item: item, params=params))
+    assert params == {'limit': 10}

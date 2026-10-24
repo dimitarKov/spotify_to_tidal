@@ -5,7 +5,7 @@ import asyncio
 import math
 import requests
 import time
-from typing import Any, Callable, Dict, List, Sequence, TypeVar
+from typing import Any, Callable, Dict, List, Mapping, Sequence, TypeVar
 from tidalapi.media import Track
 from tidalapi.playlist import Playlist, UserPlaylist
 from tidalapi.session import Session
@@ -57,14 +57,14 @@ def add_multiple_tracks_to_playlist(playlist: UserPlaylist, track_ids: Sequence[
             offset += count
             progress.update(count)
 
-async def _get_all_chunks(url: str, session: Session, parser: Callable[[Any], T], params: Dict[str, Any] = {}) -> List[T]:
+async def _get_all_chunks(url: str, session: Session, parser: Callable[[Any], T], params: Mapping[str, Any] | None = None) -> List[T]:
     """
         Helper function to get all items from a Tidal endpoint in parallel
         The main library doesn't provide the total number of items or expose the raw json, so use this wrapper instead
     """
     def _make_request(offset: int=0) -> Dict[str, Any]:
-        new_params = params
-        new_params['offset'] = offset
+        # requests run concurrently in threads, so each needs its own params rather than mutating a shared dict
+        new_params = {**(params or {}), 'offset': offset}
         return session.request.map_request(url, params=new_params)
 
     def _get_chunk(offset: int) -> List[T]:
