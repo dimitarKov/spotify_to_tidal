@@ -32,7 +32,7 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
 
 ## Phase 2 — Reliability
 
-- [ ] **B6. SQLite "database is locked".** Many threads write `.cache.db` concurrently.
+- [x] **B6. SQLite "database is locked".** Many threads write `.cache.db` concurrently.
   - Fix: enable WAL mode + busy timeout on the engine (or serialise writes through a lock).
 - [ ] **B7. Failure back-off never grows.** `cache_match_failure` calls `_get_next_retry_time()` without `insert_time`, so re-failures always wait 7 days instead of doubling.
   - Fix: pass the existing row's `insert_time`; add a test.
