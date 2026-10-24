@@ -12,7 +12,7 @@ from pytest_mock import MockerFixture
 from tidalapi.exceptions import TooManyRequests
 
 from spotify_to_tidal import sync as _sync
-from spotify_to_tidal.sync import _extract_track, _is_transient_error, get_tracks_from_spotify_playlist, repeat_on_request_error
+from spotify_to_tidal.sync import _extract_track, _is_transient_error, artist_match, get_tracks_from_spotify_playlist, repeat_on_request_error, simple_artist
 from spotify_to_tidal.rate_limiter import RateLimiter
 from spotify_to_tidal.type import SpotifyPlaylist, SpotifyTrack, SyncConfig
 
@@ -386,3 +386,47 @@ def test_isrc_lookup_error_count_resets_on_success():
     for _ in range(2 * len(errors) + 1):
         asyncio.run(lookup.find("ISRC"))
     assert lookup.enabled
+
+
+# Test artist name handling (I2)
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("Ken-Y", "ken y"),
+    ("JAY-Z", "jay z"),
+    ("  Jay   Z ", "jay z"),
+    ("R.K.M & Ken-Y", "r.k.m & ken y"),
+    ("Artist (US)", "artist"),
+])
+def test_simple_artist(name: str, expected: str):
+    assert simple_artist(name) == expected
+
+
+def tidal_with_artists(*names: str) -> Any:
+    return SimpleNamespace(artists=[SimpleNamespace(name=name) for name in names])
+
+
+def spotify_with_artists(*names: str) -> SpotifyTrack:
+    track = make_track("a")
+    track["artists"] = [{"name": name} for name in names]
+    return track
+
+
+@pytest.mark.parametrize("tidal_artists, spotify_artists, expected", [
+    (["Ken-Y"], ["Ken-Y"], True),
+    (["JAY-Z"], ["Jay Z"], True),
+    (["R.K.M & Ken-Y"], ["Ken-Y"], True),  # combined Tidal artist split on '&'
+    (["Ken-Dog"], ["Ken-Y"], False),  # used to match: both were truncated to 'ken'
+    (["Jay-Jay Johanson"], ["JAY-Z"], False),  # used to match: both were 'jay'
+])
+def test_artist_match_keeps_hyphenated_names(tidal_artists: List[str], spotify_artists: List[str], expected: bool):
+    assert artist_match(tidal_with_artists(*tidal_artists), spotify_with_artists(*spotify_artists)) is expected
+
+
+def test_search_query_uses_full_artist_name(failure_cache: mock.Mock):
+    spotify_track = spotify_with_artists("Ken-Y")
+    spotify_track["album"]["artists"] = [{"name": "Ken-Y"}]
+    session = fake_tidal_session(albums=[], tracks=[])
+    run_tidal_search(spotify_track, session)
+    queries = [call.args[0] for call in session.search.call_args_list]
+    assert queries == ["Album Ken-Y", "Song Ken-Y"]

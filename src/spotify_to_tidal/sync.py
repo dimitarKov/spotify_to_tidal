@@ -35,6 +35,13 @@ def simple(input_string: str) -> str:
     # only take the first part of a string before any hyphens or brackets to account for different versions
     return input_string.split('-')[0].strip().split('(')[0].strip().split('[')[0].strip()
 
+def simple_artist(artist_name: str) -> str:
+    """ Normalises an artist name for comparison. Unlike in titles, hyphens are part of artist names (Jay-Z, Ken-Y),
+        so keep the whole name and only treat hyphens as spaces, so 'JAY-Z' and 'Jay Z' compare equal.
+        Bracketed suffixes are still dropped, as for titles """
+    name = artist_name.split('(')[0].split('[')[0]
+    return ' '.join(name.lower().replace('-', ' ').split())
+
 def isrc_match(tidal_track: Track, spotify_track: SpotifyTrack) -> bool:
     external_ids = spotify_track.get("external_ids", {})
     if "isrc" in external_ids:
@@ -78,7 +85,7 @@ def artist_match(tidal: Track | Album, spotify: SpotifyTrack | SpotifyAlbum) -> 
             if do_normalize:
                 artist_name = normalize(artist_name)
             result.extend(split_artist_name(artist_name))
-        return set([simple(x.strip().lower()) for x in result])
+        return set([simple_artist(x) for x in result])
 
     def get_tidal_artists(tidal: Track | Album, do_normalize: bool=False) -> Set[str]:
         return get_artists([artist.name for artist in tidal.artists or []], do_normalize)
@@ -154,7 +161,7 @@ async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, t
         # search for album name and first album artist
         album_artist = spotify_track['album']['artists'][0]['name'] if spotify_track['album']['artists'] else None
         if album_artist is not None:
-            query = simple(spotify_track['album']['name']) + " " + simple(album_artist)
+            query = simple(spotify_track['album']['name']) + " " + album_artist.strip()
             album_result = tidal_session.search(query, models=[Album])
             for album in album_result['albums']:
                 if album.num_tracks is not None and album.num_tracks >= spotify_track['track_number'] and test_album_similarity(spotify_track['album'], album):
@@ -171,7 +178,7 @@ async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, t
 
     def _search_for_standalone_track() -> Track | None:
         # if album search fails then search for track name and first artist
-        query = simple(spotify_track['name']) + ' ' + simple(spotify_track['artists'][0]['name'] or '')
+        query = simple(spotify_track['name']) + ' ' + (spotify_track['artists'][0]['name'] or '').strip()
         for track in tidal_session.search(query, models=[Track])['tracks']:
             if match(track, spotify_track):
                 failure_cache.remove_match_failure(spotify_id)
