@@ -88,3 +88,53 @@ class InMemoryTidalSessionStore:
 
     def save(self, tokens: TidalTokens) -> None:
         self.tokens = tokens
+
+
+class PlaylistMappingStore(Protocol):
+    """ Which Tidal playlist each Spotify playlist was synced to (Spotify playlist id -> Tidal playlist id),
+        so playlists stay paired when renamed """
+
+    def get(self, spotify_id: str) -> str | None: ...
+    def set(self, spotify_id: str, tidal_id: str) -> None: ...
+    def all(self) -> Dict[str, str]: ...
+
+
+class InMemoryPlaylistMappingStore:
+    def __init__(self, mappings: Dict[str, str] | None = None):
+        self.mappings: Dict[str, str] = dict(mappings or {})
+
+    def get(self, spotify_id: str) -> str | None:
+        return self.mappings.get(spotify_id)
+
+    def set(self, spotify_id: str, tidal_id: str) -> None:
+        self.mappings[spotify_id] = tidal_id
+
+    def all(self) -> Dict[str, str]:
+        return dict(self.mappings)
+
+
+class FilePlaylistMappingStore:
+    """ A YAML file, ".playlist_mappings.yml" by default, rewritten on every change """
+
+    def __init__(self, path: str | Path = ".playlist_mappings.yml"):
+        self.path = Path(path)
+
+    def _load(self) -> Dict[str, str]:
+        try:
+            with open(self.path, "r", encoding="utf-8") as mapping_file:
+                mappings: Dict[str, str] | None = yaml.safe_load(mapping_file)
+                return mappings or {}
+        except OSError:
+            return {}
+
+    def get(self, spotify_id: str) -> str | None:
+        return self._load().get(spotify_id)
+
+    def set(self, spotify_id: str, tidal_id: str) -> None:
+        mappings = self._load()
+        mappings[spotify_id] = tidal_id
+        with open(self.path, "w", encoding="utf-8") as mapping_file:
+            yaml.safe_dump(mappings, mapping_file)
+
+    def all(self) -> Dict[str, str]:
+        return self._load()

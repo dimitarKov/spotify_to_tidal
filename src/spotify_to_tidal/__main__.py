@@ -38,7 +38,7 @@ def run(args: argparse.Namespace):
         # if a playlist ID is explicitly provided as a command line argument then use that
         spotify_playlist = spotify_session.playlist(args.uri)
         tidal_playlists = _sync.get_tidal_playlists_wrapper(tidal_session)
-        tidal_playlist = _sync.pick_tidal_playlist_for_spotify_playlist(spotify_playlist, tidal_playlists)
+        tidal_playlist = _sync.pick_tidal_playlist_for_spotify_playlist(context.playlist_mappings, spotify_playlist, tidal_playlists)
         _sync.sync_playlists_wrapper(context, spotify_session, tidal_session, [tidal_playlist])
         sync_favorites = args.sync_favorites # only sync favorites if command line argument explicitly passed
     elif args.sync_favorites:
@@ -49,7 +49,7 @@ def run(args: argparse.Namespace):
         sync_favorites = args.sync_favorites is None and config.get('sync_favorites_default', True)
     else:
         # otherwise sync all the user playlists in the Spotify account and favorites unless explicitly disabled
-        _sync.sync_playlists_wrapper(context, spotify_session, tidal_session, _sync.get_user_playlist_mappings(spotify_session, tidal_session, config))
+        _sync.sync_playlists_wrapper(context, spotify_session, tidal_session, _sync.get_user_playlist_mappings(context, spotify_session, tidal_session))
         sync_favorites = args.sync_favorites is None and config.get('sync_favorites_default', True)
 
     if sync_favorites:

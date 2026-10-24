@@ -3,7 +3,7 @@
 import asyncio
 from .cache import TrackMatchCache
 from .context import SyncContext
-from .storage import MatchFailureStore
+from .storage import MatchFailureStore, PlaylistMappingStore
 from difflib import SequenceMatcher
 from typing import Any, Awaitable, Callable, List, Mapping, Optional, ParamSpec, Sequence, Set, Tuple, TypeVar, cast
 import math
@@ -481,6 +481,8 @@ async def sync_playlist(context: SyncContext, spotify_session: spotipy.Spotify, 
         get_reporter().info(f"No playlist found on Tidal corresponding to Spotify playlist: '{spotify_playlist['name']}', creating new playlist")
         user_playlist = _get_logged_in_user(tidal_session).create_playlist(spotify_playlist['name'], spotify_playlist['description'] or '')
         old_tidal_tracks = []
+    if user_playlist.id is not None:
+        context.playlist_mappings.set(spotify_playlist['id'], user_playlist.id)
 
     # Extract the new tracks from the playlist that we haven't already seen before
     populate_track_match_cache(context.track_match_cache, spotify_tracks, old_tidal_tracks)
@@ -548,25 +550,37 @@ def sync_playlists_wrapper(context: SyncContext, spotify_session: spotipy.Spotif
 def sync_favorites_wrapper(context: SyncContext, spotify_session: spotipy.Spotify, tidal_session: Session):
     asyncio.run(main=sync_favorites(context, spotify_session=spotify_session, tidal_session=tidal_session))
 
-def get_tidal_playlists_wrapper(tidal_session: Session) -> Mapping[str, Playlist]:
-    tidal_playlists = asyncio.run(get_all_playlists(_get_logged_in_user(tidal_session)))
-    return {playlist.name: playlist for playlist in tidal_playlists if playlist.name is not None}
+def get_tidal_playlists_wrapper(tidal_session: Session) -> List[Playlist]:
+    return asyncio.run(get_all_playlists(_get_logged_in_user(tidal_session)))
 
-def pick_tidal_playlist_for_spotify_playlist(spotify_playlist: SpotifyPlaylist, tidal_playlists: Mapping[str, Playlist]) -> PlaylistMapping:
-    if spotify_playlist['name'] in tidal_playlists:
-      # if there's an existing tidal playlist with the name of the current playlist then use that
-      tidal_playlist = tidal_playlists[spotify_playlist['name']]
-      return (spotify_playlist, tidal_playlist)
-    else:
-      return (spotify_playlist, None)
+def pick_tidal_playlist_for_spotify_playlist(playlist_mappings: PlaylistMappingStore, spotify_playlist: SpotifyPlaylist,
+                                             tidal_playlists: Sequence[Playlist], claimed: Set[str] | None = None) -> PlaylistMapping:
+    """ The Tidal playlist to sync the Spotify playlist to, or None to create a new one:
+        1. the one it was synced to before, if it still exists (even if either playlist was renamed)
+        2. otherwise one of the user's playlists with the same name, unless it's paired with another Spotify playlist
+        Tidal playlist ids picked are added to `claimed`, so a run doesn't pair two Spotify playlists with one Tidal playlist """
+    claimed = set() if claimed is None else claimed
+    by_id = {playlist.id: playlist for playlist in tidal_playlists if playlist.id is not None}
+    stored_id = playlist_mappings.get(spotify_playlist['id'])
+    if stored_id is not None and stored_id in by_id:
+        claimed.add(stored_id)
+        return (spotify_playlist, by_id[stored_id])
 
-def get_user_playlist_mappings(spotify_session: spotipy.Spotify, tidal_session: Session, config: SyncConfig) -> List[PlaylistMapping]:
-    results: List[PlaylistMapping] = []
-    spotify_playlists = asyncio.run(get_playlists_from_spotify(spotify_session, config))
+    paired_elsewhere = {tidal_id for spotify_id, tidal_id in playlist_mappings.all().items() if spotify_id != spotify_playlist['id']}
+    for tidal_playlist in tidal_playlists:
+        tidal_id = tidal_playlist.id
+        if (tidal_id is not None and tidal_playlist.name == spotify_playlist['name'] and isinstance(tidal_playlist, UserPlaylist)
+                and tidal_id not in claimed and tidal_id not in paired_elsewhere):
+            claimed.add(tidal_id)
+            return (spotify_playlist, tidal_playlist)
+    return (spotify_playlist, None)
+
+def get_user_playlist_mappings(context: SyncContext, spotify_session: spotipy.Spotify, tidal_session: Session) -> List[PlaylistMapping]:
+    spotify_playlists = asyncio.run(get_playlists_from_spotify(spotify_session, context.config))
     tidal_playlists = get_tidal_playlists_wrapper(tidal_session)
-    for spotify_playlist in spotify_playlists:
-        results.append( pick_tidal_playlist_for_spotify_playlist(spotify_playlist, tidal_playlists) )
-    return results
+    claimed: Set[str] = set()
+    return [pick_tidal_playlist_for_spotify_playlist(context.playlist_mappings, spotify_playlist, tidal_playlists, claimed)
+            for spotify_playlist in spotify_playlists]
 
 async def get_playlists_from_spotify(spotify_session: spotipy.Spotify, config: SyncConfig) -> List[SpotifyPlaylist]:
     # get all the playlists from the Spotify account
