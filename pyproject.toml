@@ -17,9 +17,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+web = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "jinja2~=3.1",
+  "itsdangerous~=2.2",
+  "python-multipart>=0.0.9"
+]
 dev = [
+  "spotify_to_tidal[web]",
   "pytest~=8.0",
   "pytest-mock~=3.8",
+  "httpx2>=2.0",
   "pyright"
 ]
 
@@ -27,8 +36,12 @@ dev = [
 where = ["src"]
 include = ["spotify_to_tidal*"]
 
+[tool.setuptools.package-data]
+"spotify_to_tidal.web" = ["templates/*.html", "static/*"]
+
 [project.scripts]
 spotify_to_tidal = "spotify_to_tidal.__main__:main"
+spotify_to_tidal_web = "spotify_to_tidal.web.__main__:main"
 
 [tool.pyright]
 include = ["src", "tests"]

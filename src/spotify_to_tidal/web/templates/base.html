@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Spotify to Tidal{% endblock %}</title>
+  <script src="{{ url_for('static', path='htmx.min.js') }}" defer></script>
+  <style>
+    :root {
+      --bg: #f7f7f8; --surface: #ffffff; --text: #18181b; --muted: #5f5f6b;
+      --border: #e2e2e6; --accent: #0f7a5c; --accent-text: #ffffff; --error: #b42318;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111114; --surface: #1b1b20; --text: #ececf1; --muted: #a0a0ad;
+        --border: #2e2e36; --accent: #36c08f; --accent-text: #0b0b0d; --error: #f97066;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    main { max-width: 40rem; margin: 0 auto; padding: 2.5rem 1rem; }
+    h1 { font-size: 1.6rem; margin: 0 0 0.25rem; }
+    .muted { color: var(--muted); }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      padding: 1.25rem; margin: 1.5rem 0;
+    }
+    label { display: block; font-weight: 600; margin-bottom: 0.4rem; }
+    input[type=text], input[type=password] {
+      width: 100%; padding: 0.6rem 0.75rem; font: inherit; color: var(--text);
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    }
+    button {
+      font: inherit; font-weight: 600; cursor: pointer; padding: 0.6rem 1.1rem; margin-top: 0.9rem;
+      color: var(--accent-text); background: var(--accent); border: 0; border-radius: 8px;
+    }
+    button.link { background: none; color: var(--muted); padding: 0; margin: 0; font-weight: 400; text-decoration: underline; }
+    .error { color: var(--error); margin: 0.6rem 0 0; }
+    header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+  </style>
+</head>
+<body>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

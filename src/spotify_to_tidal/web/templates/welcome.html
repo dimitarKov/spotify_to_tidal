@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Welcome · Spotify to Tidal{% endblock %}
+{% block content %}
+<h1>Spotify to Tidal</h1>
+<p class="muted">Copy your Spotify playlists and liked songs to Tidal.</p>
+<form class="card" method="post" action="/welcome">
+  <label for="invite_code">Invite code</label>
+  <input id="invite_code" name="invite_code" type="password" autocomplete="off" required autofocus>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <button type="submit">Continue</button>
+</form>
+{% endblock %}

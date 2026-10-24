@@ -45,6 +45,19 @@ spotify_to_tidal --sync-favorites
 
 See example_config.yml for more configuration options, and `spotify_to_tidal --help` for more options.
 
+Web app (work in progress)
+----
+A web UI for syncing is being built. To try it locally:
+
+```bash
+python3 -m pip install -e ".[web]"
+export STT_INVITE_CODE=choose-a-code-for-your-friends
+export STT_SESSION_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+spotify_to_tidal_web   # http://127.0.0.1:8000
+```
+
+Each user's data is kept under `./data` (set `STT_DATA_DIR` to change it). See `src/spotify_to_tidal/web/settings.py` for all options.
+
 ---
 
 #### Join our amazing community as a code contributor

@@ -4,6 +4,9 @@ config.yaml
 .cache*
 .session.yml
 .playlist_mappings.yml
+
+# Web app per-user data (STT_DATA_DIR)
+data/
 songs not found.txt
 
 # Byte-compiled / optimized / DLL files
