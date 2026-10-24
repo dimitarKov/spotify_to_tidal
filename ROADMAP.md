@@ -25,7 +25,7 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
 - [x] **B3. Tidal `412` ETag errors on playlist writes.** Sync aborts mid-rewrite, can leave a playlist half-erased.
   - `tidalapi_patch.py` `_remove_indices_from_playlist`, `add_multiple_tracks_to_playlist`.
   - Fix: on 412 only — refresh playlist/ETag, exponential back-off, retry up to 5 times; build headers inside the retried call.
-- [ ] **B4. Unavailable Tidal album crashes the search.** `album.tracks()` can raise `ObjectNotFound`; the `assert` in `_search_for_track_in_album` can fire.
+- [x] **B4. Unavailable Tidal album crashes the search.** `album.tracks()` can raise `ObjectNotFound`; the `assert` in `_search_for_track_in_album` can fire.
   - Fix: catch `ObjectNotFound` per album and move on; replace the `assert` with `continue`.
 - [ ] **B5. Race condition in parallel Tidal pagination.** `_get_all_chunks` mutates one shared `params` dict across threads → wrong offsets → duplicate/missing tracks. Also a mutable default argument.
   - Fix: `new_params = {**params, 'offset': offset}`; default `params=None`.
@@ -46,6 +46,7 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
 - [ ] **I1. Look tracks up by ISRC first.** One exact lookup before the album/track text searches; finds tracks Tidal spells differently and saves requests. (Verify `tidalapi` ISRC lookup works with our session/client.)
 - [ ] **I2. Don't truncate artist names at hyphens.** `simple()` turns `Ken-Y` into `Ken`; use it for titles only, a gentler normaliser for artists.
 - [ ] **I3. Collect a "why didn't it match" report.** Record the closest candidate per missing track to make tuning easier.
+- [ ] **I4. Title matching is too loose.** `name_match` accepts the Spotify title anywhere inside the Tidal title, so "Song" matches "Different Song" (with same artist and duration ±2s). Match on word boundaries / similarity instead.
 
 ## Phase 4 — Prepare the core for a UI
 
