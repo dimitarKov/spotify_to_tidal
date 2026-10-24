@@ -226,3 +226,63 @@ def test_other_spotify_errors_still_abort(mocker: MockerFixture):
     mocker.patch.object(_sync, "sync_playlist", fake_sync_playlist)
     with pytest.raises(spotipy.exceptions.SpotifyException):
         _sync.sync_playlists_wrapper(mock.Mock(), mock.Mock(), [(make_playlist("x", "X"), None)], EMPTY_CONFIG)
+
+
+# Test tidal_search
+from types import SimpleNamespace
+from tidalapi.album import Album
+from tidalapi.exceptions import ObjectNotFound
+from tidalapi.media import Track
+
+
+def tidal_track(isrc: str, name: str = "Song") -> SimpleNamespace:
+    return SimpleNamespace(isrc=isrc, id=hash(isrc), name=name, version=None, duration=180, artists=[SimpleNamespace(name="Artist")])
+
+
+def tidal_album(num_tracks: int, tracks: List[SimpleNamespace] | Exception) -> SimpleNamespace:
+    def get_tracks() -> List[SimpleNamespace]:
+        if isinstance(tracks, Exception):
+            raise tracks
+        return tracks
+    return SimpleNamespace(name="Album", num_tracks=num_tracks, artists=[SimpleNamespace(name="Artist")], tracks=get_tracks)
+
+
+def fake_tidal_session(albums: List[SimpleNamespace], tracks: List[SimpleNamespace]) -> mock.Mock:
+    def search(query: str, models: List[type]) -> Dict[str, Any]:
+        return {"albums": albums} if models == [Album] else {"tracks": tracks}
+    session = mock.Mock()
+    session.search.side_effect = search
+    return session
+
+
+@pytest.fixture
+def failure_cache(mocker: MockerFixture) -> mock.Mock:
+    return mocker.patch.object(_sync, "failure_cache")
+
+
+def run_tidal_search(spotify_track: SpotifyTrack, session: mock.Mock) -> Track | None:
+    return asyncio.run(_sync.tidal_search(spotify_track, asyncio.Semaphore(10), session))
+
+
+def test_tidal_search_skips_unavailable_album(failure_cache: mock.Mock):
+    wanted = tidal_track("ISRCa")
+    session = fake_tidal_session(
+        albums=[tidal_album(1, ObjectNotFound("Object not found")), tidal_album(1, [wanted])],
+        tracks=[])
+    assert run_tidal_search(make_track("a"), session) is wanted
+    failure_cache.remove_match_failure.assert_called_once_with("a")
+
+
+def test_tidal_search_falls_back_to_track_search_when_album_metadata_is_wrong(failure_cache: mock.Mock):
+    wanted = tidal_track("ISRCa")
+    spotify_track = make_track("a")
+    spotify_track["track_number"] = 5
+    # the album claims 10 tracks but only returns 2
+    session = fake_tidal_session(albums=[tidal_album(10, [tidal_track("x"), tidal_track("y")])], tracks=[wanted])
+    assert run_tidal_search(spotify_track, session) is wanted
+
+
+def test_tidal_search_records_failure_when_nothing_matches(failure_cache: mock.Mock):
+    session = fake_tidal_session(albums=[tidal_album(1, ObjectNotFound("Object not found"))], tracks=[tidal_track("other", name="Other Tune")])
+    assert run_tidal_search(make_track("a"), session) is None
+    failure_cache.cache_match_failure.assert_called_once_with("a")

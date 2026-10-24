@@ -10,7 +10,7 @@ import requests
 import sys
 import spotipy
 from tidalapi.album import Album
-from tidalapi.exceptions import TooManyRequests
+from tidalapi.exceptions import ObjectNotFound, TooManyRequests
 from tidalapi.media import Track
 from tidalapi.playlist import Playlist, UserPlaylist
 from tidalapi.session import Session
@@ -116,10 +116,12 @@ async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: asyncio.Semaph
             album_result = tidal_session.search(query, models=[Album])
             for album in album_result['albums']:
                 if album.num_tracks is not None and album.num_tracks >= spotify_track['track_number'] and test_album_similarity(spotify_track['album'], album):
-                    album_tracks = album.tracks()
+                    try:
+                        album_tracks = album.tracks()
+                    except ObjectNotFound:
+                        continue # album listed in search results but not available, e.g. in the user's region
                     if len(album_tracks) < spotify_track['track_number']:
-                        assert( not len(album_tracks) == album.num_tracks ) # incorrect metadata :(
-                        continue
+                        continue # incorrect metadata :(
                     track = album_tracks[spotify_track['track_number'] - 1]
                     if match(track, spotify_track):
                         failure_cache.remove_match_failure(spotify_id)
