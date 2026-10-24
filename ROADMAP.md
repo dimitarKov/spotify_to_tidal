@@ -61,7 +61,12 @@ The sync code currently assumes one user, a terminal, and files in the working d
 
 - [x] **H1. Decide architecture.** _Decided 2026-10-24: (a) Cloudflare Containers running the Python app._ Python Workers can't run threads or `requests`; a TypeScript rewrite would depend on TIDAL's official API, whose playlist/collection write support and throttling are unproven. Containers: Workers Paid ($5/mo), ephemeral disk, reached via Worker → Durable Object, sleep after inactivity (default 10 min). Revisit the official TIDAL API later (tidalapi uses TIDAL's own client credentials).
 - [ ] **H0. Container sleep spike.** Deploy a throwaway container running a fake 20-minute job while a page polls its progress; confirm the instance isn't stopped mid-job (else keep it alive from the Durable Object). Needs a Cloudflare account on Workers Paid.
-- [ ] **H2. Build UI:** log in with Spotify + Tidal, pick playlists, start sync, live progress, "not found" list.
+- [ ] **H2. Build UI:** log in with Spotify + Tidal, pick playlists, start sync, live progress, "not found" list. FastAPI + server-rendered Jinja pages with htmx (vendored); shared invite code; SSE for progress.
+  - [x] **H2a.** App skeleton: settings from env, signed session cookie, invite code gate, per-user data directories, `spotify_to_tidal_web` command.
+  - [ ] **H2b.** Log in with Spotify (`SpotifyLogin`, OAuth callback) and Tidal (`start_tidal_login`, polled status); identify users by Spotify id.
+  - [ ] **H2c.** Playlists API, background sync jobs (one per user) reporting through a `Reporter`, progress over Server-Sent Events.
+  - [ ] **H2d.** Pages: connect accounts, pick playlists, live sync progress.
+  - [ ] **H2e.** Results page with the not-found report; polish.
 - [ ] **H3. Secrets & data:** token encryption at rest, per-user storage, rate limits shared across users.
 - [ ] **H4. Spotify app limits:** owner needs Premium; Dev Mode user cap (5 for apps created after 2026-02-11) — add friends' emails in the Spotify dashboard.
 
