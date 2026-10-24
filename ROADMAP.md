@@ -52,7 +52,7 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
 
 The sync code currently assumes one user, a terminal, and files in the working directory.
 
-- [ ] **R1. No `sys.exit` / `print` in library code.** Raise typed exceptions; report progress through a callback/event interface (CLI keeps `tqdm` via an adapter).
+- [x] **R1. No `sys.exit` / `print` in library code.** Raise typed exceptions; report progress through a callback/event interface (CLI keeps `tqdm` via an adapter).
 - [ ] **R2. Per-user state behind a storage interface.** Spotify/Tidal tokens, config, match-failure cache passed in explicitly instead of `config.yml` / `.session.yml` / `.cache.db` in the CWD. Container disks are ephemeral (H1), so state goes through a storage interface: local files for the CLI, D1/R2 (or Durable Object storage) in production. Remove module-level singletons (`TrackMatchCache.data` is a class attribute shared by all instances).
 - [ ] **R3. Pluggable auth flows.** Spotify OAuth with a hosted HTTPS redirect URI; Tidal device-login returning the link/code to the UI instead of opening a browser.
 - [ ] **R4. Playlist pairing by stored ID**, not by name, so renames don't create duplicates.
