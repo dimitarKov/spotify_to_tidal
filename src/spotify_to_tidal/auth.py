@@ -22,12 +22,12 @@ def open_spotify_session(config: SpotifyConfig) -> spotipy.Spotify:
        client_id=config['client_id'],
        client_secret=config['client_secret'],
        redirect_uri=config['redirect_uri'],
-       requests_timeout=2,
+       requests_timeout=10,
        open_browser=config.get('open_browser', True))
     try:
         credentials_manager.get_access_token(as_dict=False)
     except spotipy.SpotifyOauthError:
-        sys.exit("Error opening Spotify sesion; could not get token for username: ".format(config['username']))
+        sys.exit("Error opening Spotify session; could not get token for username: {}".format(config['username']))
 
     return spotipy.Spotify(oauth_manager=credentials_manager)
 

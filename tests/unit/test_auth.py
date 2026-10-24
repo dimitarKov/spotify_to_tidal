@@ -38,7 +38,7 @@ def test_open_spotify_session(mocker: MockerFixture):
         client_id="test_client_id",
         client_secret="test_client_secret",
         redirect_uri="http://127.0.0.1/",
-        requests_timeout=2,
+        requests_timeout=10,
         open_browser=True,
     )
 
@@ -69,4 +69,4 @@ def test_open_spotify_session_oauth_error(mocker: MockerFixture):
 
     # Call the function under test and assert sys.exit is called
     open_spotify_session(mock_config)
-    mock_sys_exit.assert_called_once()
+    mock_sys_exit.assert_called_once_with("Error opening Spotify session; could not get token for username: test_user")
