@@ -157,10 +157,17 @@ class IsrcLookup:
         self._consecutive_errors = 0
         return tracks
 
-async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, tidal_session: Session, isrc_lookup: IsrcLookup | None = None) -> Track | None:
+async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, tidal_session: Session, isrc_lookup: IsrcLookup | None = None,
+                       candidates: List[Track] | None = None) -> Track | None:
+    """ Searches Tidal for the Spotify track. Every Tidal track considered is appended to `candidates`, if given,
+        so the closest one can be reported when nothing matches """
     spotify_id = spotify_track['id']
     if spotify_id is None:
         return None
+
+    def _consider(track: Track):
+        if candidates is not None:
+            candidates.append(track)
 
     async def _search_by_isrc() -> Track | None:
         isrc = spotify_track.get('external_ids', {}).get('isrc')
@@ -168,6 +175,7 @@ async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, t
             return None
         await rate_limiter.acquire()
         for track in await isrc_lookup.find(isrc):
+            _consider(track)
             if track.available and match(track, spotify_track):
                 failure_cache.remove_match_failure(spotify_id)
                 return track
@@ -187,6 +195,7 @@ async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, t
                     if len(album_tracks) < spotify_track['track_number']:
                         continue # incorrect metadata :(
                     track = album_tracks[spotify_track['track_number'] - 1]
+                    _consider(track)
                     if match(track, spotify_track):
                         failure_cache.remove_match_failure(spotify_id)
                         return track
@@ -195,6 +204,7 @@ async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, t
         # if album search fails then search for track name and first artist
         query = simple(spotify_track['name']) + ' ' + (spotify_track['artists'][0]['name'] or '').strip()
         for track in tidal_session.search(query, models=[Track])['tracks']:
+            _consider(track)
             if match(track, spotify_track):
                 failure_cache.remove_match_failure(spotify_id)
                 return track
@@ -212,6 +222,39 @@ async def tidal_search(spotify_track: SpotifyTrack, rate_limiter: RateLimiter, t
 
     # if none of the search modes succeeded then store the track id to the failure cache
     failure_cache.cache_match_failure(spotify_id)
+
+def explain_mismatch(tidal_track: Track, spotify_track: SpotifyTrack) -> List[str]:
+    """ The reasons match() rejects this Tidal track for the Spotify track """
+    reasons: List[str] = []
+    if not tidal_track.available:
+        reasons.append("not available")
+    isrc = spotify_track.get('external_ids', {}).get('isrc')
+    if isrc and tidal_track.isrc and tidal_track.isrc != isrc:
+        reasons.append("different ISRC")
+    if not name_match(tidal_track, spotify_track):
+        reasons.append("title differs")
+    if not artist_match(tidal_track, spotify_track):
+        reasons.append("artist differs")
+    if not duration_match(tidal_track, spotify_track):
+        reasons.append(f"duration differs by {abs(tidal_track.duration - spotify_track['duration_ms']/1000):.0f}s")
+    return reasons
+
+def closest_candidate(candidates: Sequence[Track], spotify_track: SpotifyTrack) -> Track | None:
+    """ The candidate failing the fewest of the title/artist/duration checks, then closest in duration """
+    def _score(track: Track) -> Tuple[int, float]:
+        failed = [not name_match(track, spotify_track), not artist_match(track, spotify_track), not duration_match(track, spotify_track)]
+        return sum(failed), abs(track.duration - spotify_track['duration_ms']/1000)
+    return min(candidates, key=_score, default=None)
+
+def describe_no_match(spotify_track: SpotifyTrack, candidates: Sequence[Track]) -> str:
+    """ One line for "songs not found.txt" explaining why the closest Tidal candidate was rejected """
+    closest = closest_candidate(candidates, spotify_track)
+    if closest is None:
+        return "no candidates found on Tidal"
+    artists = ', '.join(artist.name or '' for artist in closest.artists or [])
+    version = f" ({closest.version})" if closest.version else ""
+    reasons = ', '.join(explain_mismatch(closest, spotify_track)) or "rejected"
+    return f"closest on Tidal: {artists} - {closest.name}{version} [{closest.id}]: {reasons}"
 
 MAX_RETRY_AFTER = 10*60 # if a server asks us to wait longer than this, give up instead
 
@@ -403,18 +446,21 @@ async def search_new_tracks_on_tidal(tidal_session: Session, spotify_tracks: Seq
     task_description = "Searching Tidal for {}/{} tracks in Spotify playlist '{}'".format(len(tracks_to_search), len(spotify_tracks), playlist_name)
     rate_limiter = RateLimiter(rate=config.get('rate_limit', 10), capacity=config.get('max_concurrency', 10))
     isrc_lookup = IsrcLookup(tidal_session)
-    search_results = await gather_with_progress([ repeat_on_request_error(tidal_search, t, rate_limiter, tidal_session, isrc_lookup) for t in tracks_to_search ], desc=task_description )
+    candidates: List[List[Track]] = [[] for _ in tracks_to_search]
+    search_results = await gather_with_progress([ repeat_on_request_error(tidal_search, t, rate_limiter, tidal_session, isrc_lookup, c)
+                                                  for t, c in zip(tracks_to_search, candidates) ], desc=task_description )
 
     # Add the search results to the cache
     song404: List[str] = []
-    for spotify_track, search_result in zip(tracks_to_search, search_results):
+    for spotify_track, search_result, track_candidates in zip(tracks_to_search, search_results, candidates):
         spotify_id = spotify_track['id']
         if search_result and spotify_id is not None:
             track_match_cache.insert( (spotify_id, search_result.id) )
         else:
-            song404.append(f"{spotify_id}: {_artist_names(spotify_track, ',')} - {spotify_track['name']}")
+            song = f"{spotify_id}: {_artist_names(spotify_track, ',')} - {spotify_track['name']}"
             color = ('\033[91m', '\033[0m')
-            print(color[0] + "Could not find the track " + song404[-1] + color[1])
+            print(color[0] + "Could not find the track " + song + color[1])
+            song404.append(f"{song}\n    {describe_no_match(spotify_track, track_candidates)}")
     if not song404:
         return
     file_name = "songs not found.txt"

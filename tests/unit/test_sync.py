@@ -480,3 +480,59 @@ def test_name_match_keeps_exclusion_rules():
     assert _sync.name_match(tidal_titled("Song", version="Remix"), spotify_titled("Song")) is False
     assert _sync.name_match(tidal_titled("Song (Instrumental)"), spotify_titled("Song")) is False
     assert _sync.name_match(tidal_titled("Song (Remix)"), spotify_titled("Song - Remix")) is True
+
+
+# Test "why didn't it match" report (I3)
+def candidate(name: str = "Song", artist: str = "Artist", duration: int = 180, isrc: str = "ISRCa",
+              available: bool = True, version: str | None = None, track_id: int = 1) -> Any:
+    return SimpleNamespace(id=track_id, name=name, version=version, duration=duration, isrc=isrc, available=available,
+                           artists=[SimpleNamespace(name=artist)])
+
+
+@pytest.mark.parametrize("tidal, reasons", [
+    (candidate(), []),
+    (candidate(name="Other Tune", isrc="ISRCx"), ["different ISRC", "title differs"]),
+    (candidate(artist="Someone Else"), ["artist differs"]),
+    (candidate(duration=200), ["duration differs by 20s"]),
+    (candidate(available=False), ["not available"]),
+])
+def test_explain_mismatch(tidal: Any, reasons: List[str]):
+    assert _sync.explain_mismatch(tidal, make_track("a")) == reasons
+
+
+def test_closest_candidate_fails_fewest_checks():
+    far = candidate(name="Other Tune", artist="Someone Else", track_id=1)
+    close = candidate(duration=190, track_id=2)
+    closer = candidate(duration=185, track_id=3)
+    assert _sync.closest_candidate([far, close, closer], make_track("a")) is closer
+    assert _sync.closest_candidate([], make_track("a")) is None
+
+
+def test_describe_no_match():
+    spotify_track = make_track("a")
+    assert _sync.describe_no_match(spotify_track, []) == "no candidates found on Tidal"
+    tidal = candidate(name="Song", version="Live", duration=240, track_id=42)
+    assert _sync.describe_no_match(spotify_track, [tidal]) == "closest on Tidal: Artist - Song (Live) [42]: duration differs by 60s"
+
+
+def test_tidal_search_collects_candidates(failure_cache: mock.Mock):
+    rejected = candidate(name="Other Tune", isrc="ISRCx")
+    session = fake_tidal_session(albums=[], tracks=[rejected])
+    candidates: List[Track] = []
+    asyncio.run(_sync.tidal_search(make_track("a"), RateLimiter(rate=10, capacity=10), session, None, candidates))
+    assert candidates == [rejected]
+
+
+def test_not_found_file_explains_closest_candidate(mocker: MockerFixture, in_tmp_dir: Path, failure_cache: mock.Mock):
+    def all_tracks_are_new(spotify_tracks: Sequence[SpotifyTrack]) -> List[SpotifyTrack]:
+        return list(spotify_tracks)
+
+    mocker.patch.object(_sync, "get_new_spotify_tracks", all_tracks_are_new)
+    mocker.patch.object(_sync, "track_match_cache")
+    session = fake_tidal_session(albums=[], tracks=[candidate(name="Other Tune", isrc="ISRCx", track_id=7)])
+    session.get_tracks_by_isrc.side_effect = ObjectNotFound()
+    asyncio.run(_sync.search_new_tracks_on_tidal(session, [make_track("a")], "My Playlist", EMPTY_CONFIG))
+
+    lines = (in_tmp_dir / "songs not found.txt").read_text(encoding="utf-8").splitlines()
+    entry = lines.index("a: Artist - Song")
+    assert lines[entry + 1] == "    closest on Tidal: Artist - Other Tune [7]: different ISRC, title differs"
