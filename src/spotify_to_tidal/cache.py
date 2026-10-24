@@ -1,7 +1,7 @@
 import datetime
 import sqlalchemy
 from sqlalchemy import Table, Column, String, DateTime, MetaData, insert, select, update, delete
-from typing import Dict, List, Sequence, Set, Mapping
+from typing import Dict
 
 
 class MatchFailureDatabase:
@@ -10,7 +10,7 @@ class MatchFailureDatabase:
     this can be used concurrently between multiple processes
     """
 
-    def __init__(self, filename='.cache.db'):
+    def __init__(self, filename: str = '.cache.db'):
         self.engine = sqlalchemy.create_engine(f"sqlite:///{filename}")
         meta = MetaData()
         self.match_failures = Table('match_failures', meta,

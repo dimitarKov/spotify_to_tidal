@@ -25,6 +25,9 @@ jobs:
       - run:
           name: Run tests
           command: pytest
+      - run:
+          name: Type check
+          command: pyright
 
 workflows:
   version: 2

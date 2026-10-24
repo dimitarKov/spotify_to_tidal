@@ -1,69 +1,44 @@
-from spotipy import Spotify
-from typing import TypedDict, List, Dict, Mapping, Literal, Optional
+""" Shapes of the Spotify Web API objects used by spotify_to_tidal.
+    Only the fields we request/read are declared; see the `fields` filters in sync.py """
 
-
-class SpotifyImage(TypedDict):
-    url: str
-    height: int
-    width: int
-
-
-class SpotifyFollower(TypedDict):
-    href: str
-    total: int
-
-
-SpotifyID = str
-SpotifySession = Spotify
+from typing import Any, Dict, List, Optional, TypedDict
+from typing_extensions import NotRequired
 
 
 class SpotifyArtist(TypedDict):
-    external_urls: Mapping[str, str]
-    followers: SpotifyFollower
-    genres: List[str]
-    href: str
-    id: str
-    images: List[SpotifyImage]
-    name: str
-    popularity: int
-    type: str
-    uri: str
+    name: Optional[str]
 
 
 class SpotifyAlbum(TypedDict):
-    album_type: Literal["album", "single", "compilation"]
-    total_tracks: int
-    available_markets: List[str]
-    external_urls: Dict[str, str]
-    href: str
-    id: str
-    images: List[SpotifyImage]
     name: str
-    release_date: str
-    release_date_precision: Literal["year", "month", "day"]
-    restrictions: Optional[Dict[Literal["reason"], str]]
-    type: Literal["album"]
-    uri: str
     artists: List[SpotifyArtist]
 
 
 class SpotifyTrack(TypedDict):
+    id: Optional[str]  # None for local files
+    name: str
     album: SpotifyAlbum
     artists: List[SpotifyArtist]
-    available_markets: List[str]
-    disc_number: int
-    duration_ms: int
-    explicit: bool
-    external_ids: Dict[str, str]
-    external_urls: Dict[str, str]
-    href: str
-    id: str
-    is_playable: bool
-    linked_from: Dict
-    restrictions: Optional[Dict[Literal["reason"], str]]
-    name: str
-    popularity: int
-    preview_url: str
     track_number: int
-    type: Literal["track"]
-    uri: str
+    duration_ms: int
+    external_ids: NotRequired[Dict[str, str]]
+    type: NotRequired[str]  # 'track' or 'episode'
+
+
+class SpotifyUser(TypedDict):
+    id: str
+
+
+class SpotifyPlaylist(TypedDict):
+    id: str
+    name: str
+    description: Optional[str]
+    owner: SpotifyUser
+
+
+class SpotifyPage(TypedDict):
+    """ A page of results from a paginated endpoint """
+    items: List[Any]
+    limit: int
+    total: int
+    next: Optional[str]

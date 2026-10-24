@@ -12,13 +12,15 @@ dependencies = [
   "tidalapi~=0.8.10",
   "pyyaml~=6.0",
   "tqdm~=4.64",
-  "sqlalchemy~=2.0"
+  "sqlalchemy~=2.0",
+  "typing_extensions>=4.6"
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest~=8.0",
-  "pytest-mock~=3.8"
+  "pytest-mock~=3.8",
+  "pyright"
 ]
 
 [tool.setuptools.packages.find]
@@ -27,3 +29,10 @@ include = ["spotify_to_tidal*"]
 
 [project.scripts]
 spotify_to_tidal = "spotify_to_tidal.__main__:main"
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.10"
+venvPath = "."
+venv = ".venv"

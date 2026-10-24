@@ -1,79 +1,91 @@
+# This module works around gaps in tidalapi and deliberately uses its private members (_etag, _base_url, _reparse)
+# pyright: reportPrivateUsage=false
+
 import asyncio
 import math
-from typing import List
-import tidalapi
+from typing import Any, Callable, Dict, List, Sequence, TypeVar
+from tidalapi.media import Track
+from tidalapi.playlist import Playlist, UserPlaylist
+from tidalapi.session import Session
+from tidalapi.user import Favorites, User
 from tqdm import tqdm
-from tqdm.asyncio import tqdm as atqdm
+from .progress import gather_with_progress
 
-def _remove_indices_from_playlist(playlist: tidalapi.UserPlaylist, indices: List[int]):
-    headers = {'If-None-Match': playlist._etag}
+T = TypeVar('T')
+
+def _remove_indices_from_playlist(playlist: UserPlaylist, indices: Sequence[int]):
+    headers: Dict[str, str] = {}
+    if playlist._etag is not None:
+        headers['If-None-Match'] = playlist._etag
     index_string = ",".join(map(str, indices))
     playlist.request.request('DELETE', (playlist._base_url + '/items/%s') % (playlist.id, index_string), headers=headers)
     playlist._reparse()
 
-def clear_tidal_playlist(playlist: tidalapi.UserPlaylist, chunk_size: int=20):
+def clear_tidal_playlist(playlist: UserPlaylist, chunk_size: int=20):
     with tqdm(desc="Erasing existing tracks from Tidal playlist", total=playlist.num_tracks) as progress:
         while playlist.num_tracks:
             indices = range(min(playlist.num_tracks, chunk_size))
             _remove_indices_from_playlist(playlist, indices)
             progress.update(len(indices))
-    
-def add_multiple_tracks_to_playlist(playlist: tidalapi.UserPlaylist, track_ids: List[int], chunk_size: int=20):
+
+def add_multiple_tracks_to_playlist(playlist: UserPlaylist, track_ids: Sequence[int], chunk_size: int=20):
     offset = 0
     with tqdm(desc="Adding new tracks to Tidal playlist", total=len(track_ids)) as progress:
         while offset < len(track_ids):
             count = min(chunk_size, len(track_ids) - offset)
-            playlist.add(track_ids[offset:offset+chunk_size])
+            playlist.add([str(track_id) for track_id in track_ids[offset:offset+chunk_size]])
             offset += count
             progress.update(count)
 
-async def _get_all_chunks(url, session, parser, params={}) -> List[tidalapi.Track]:
-    """ 
+async def _get_all_chunks(url: str, session: Session, parser: Callable[[Any], T], params: Dict[str, Any] = {}) -> List[T]:
+    """
         Helper function to get all items from a Tidal endpoint in parallel
         The main library doesn't provide the total number of items or expose the raw json, so use this wrapper instead
     """
-    def _make_request(offset: int=0):
+    def _make_request(offset: int=0) -> Dict[str, Any]:
         new_params = params
         new_params['offset'] = offset
         return session.request.map_request(url, params=new_params)
 
+    def _get_chunk(offset: int) -> List[T]:
+        return session.request.map_json(_make_request(offset), parse=parser)
+
     first_chunk_raw = _make_request()
-    limit = first_chunk_raw['limit']
-    total = first_chunk_raw['totalNumberOfItems']
-    items = session.request.map_json(first_chunk_raw, parse=parser)
+    limit: int = first_chunk_raw['limit']
+    total: int = first_chunk_raw['totalNumberOfItems']
+    items: List[T] = session.request.map_json(first_chunk_raw, parse=parser)
 
     if len(items) < total:
         offsets = [limit * n for n in range(1, math.ceil(total/limit))]
-        extra_results = await atqdm.gather(
-                *[asyncio.to_thread(lambda offset: session.request.map_json(_make_request(offset), parse=parser), offset) for offset in offsets],
+        extra_results = await gather_with_progress(
+            [asyncio.to_thread(_get_chunk, offset) for offset in offsets],
             desc="Fetching additional data chunks"
         )
         for extra_result in extra_results:
             items.extend(extra_result)
     return items
 
-async def get_all_favorites(favorites: tidalapi.Favorites, order: str = "NAME", order_direction: str = "ASC", chunk_size: int=100) -> List[tidalapi.Track]:
+async def get_all_favorites(favorites: Favorites, order: str = "NAME", order_direction: str = "ASC", chunk_size: int=100) -> List[Track]:
     """ Get all favorites from Tidal playlist in chunks """
-    params = {
+    params: Dict[str, Any] = {
         "limit": chunk_size,
         "order": order,
         "orderDirection": order_direction,
     }
     return await _get_all_chunks(f"{favorites.base_url}/tracks", session=favorites.session, parser=favorites.session.parse_track, params=params)
 
-async def get_all_playlists(user: tidalapi.User, chunk_size: int=10) -> List[tidalapi.Playlist]:
+async def get_all_playlists(user: User, chunk_size: int=10) -> List[Playlist]:
     """ Get all user playlists from Tidal in chunks """
     print(f"Loading playlists from Tidal user")
-    params = {
+    params: Dict[str, Any] = {
         "limit": chunk_size,
     }
     return await _get_all_chunks(f"users/{user.id}/playlists", session=user.session, parser=user.playlist.parse_factory, params=params)
 
-async def get_all_playlist_tracks(playlist: tidalapi.Playlist, chunk_size: int=20) -> List[tidalapi.Track]:
+async def get_all_playlist_tracks(playlist: Playlist, chunk_size: int=20) -> List[Track]:
     """ Get all tracks from Tidal playlist in chunks """
-    params = {
+    params: Dict[str, Any] = {
         "limit": chunk_size,
     }
     print(f"Loading tracks from Tidal playlist '{playlist.name}'")
     return await _get_all_chunks(f"{playlist._base_url%playlist.id}/tracks", session=playlist.session, parser=playlist.session.parse_track, params=params)
-

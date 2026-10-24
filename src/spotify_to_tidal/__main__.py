@@ -4,6 +4,7 @@ import sys
 
 from . import sync as _sync
 from . import auth as _auth
+from .type import SyncConfig
 
 def main():
     parser = argparse.ArgumentParser()
@@ -13,7 +14,7 @@ def main():
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
+        config: SyncConfig = yaml.safe_load(f)
     print("Opening Spotify session")
     spotify_session = _auth.open_spotify_session(config['spotify'])
     print("Opening Tidal session")

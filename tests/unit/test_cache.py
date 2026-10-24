@@ -1,22 +1,20 @@
 # tests/unit/test_cache.py
 
 import pytest
-import datetime
-import sqlalchemy
-from sqlalchemy import create_engine, select
-from unittest import mock
+from pytest_mock import MockerFixture
+from sqlalchemy import Engine, create_engine, select
 from spotify_to_tidal.cache import MatchFailureDatabase, TrackMatchCache
 
 
 # Setup an in-memory SQLite database for testing
 @pytest.fixture
-def in_memory_db():
+def in_memory_db() -> Engine:
     engine = create_engine("sqlite:///:memory:")
     return engine
 
 
 # Test MatchFailureDatabase
-def test_cache_match_failure(in_memory_db, mocker):
+def test_cache_match_failure(in_memory_db: Engine, mocker: MockerFixture):
     mocker.patch(
         "spotify_to_tidal.cache.sqlalchemy.create_engine", return_value=in_memory_db
     )
@@ -35,7 +33,7 @@ def test_cache_match_failure(in_memory_db, mocker):
         assert result.track_id == track_id
 
 
-def test_has_match_failure(in_memory_db, mocker):
+def test_has_match_failure(in_memory_db: Engine, mocker: MockerFixture):
     mocker.patch(
         "spotify_to_tidal.cache.sqlalchemy.create_engine", return_value=in_memory_db
     )
@@ -47,7 +45,7 @@ def test_has_match_failure(in_memory_db, mocker):
     assert failure_db.has_match_failure(track_id) is True
 
 
-def test_remove_match_failure(in_memory_db, mocker):
+def test_remove_match_failure(in_memory_db: Engine, mocker: MockerFixture):
     mocker.patch(
         "spotify_to_tidal.cache.sqlalchemy.create_engine", return_value=in_memory_db
     )

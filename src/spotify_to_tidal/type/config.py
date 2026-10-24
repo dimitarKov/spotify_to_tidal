@@ -1,18 +1,13 @@
-from typing import TypedDict, Literal, List, Optional
+from typing import List, TypedDict
+from typing_extensions import NotRequired
 
 
 class SpotifyConfig(TypedDict):
     client_id: str
     client_secret: str
     username: str
-    redirect_url: str
-
-
-class TidalConfig(TypedDict):
-    access_token: str
-    refresh_token: str
-    session_id: str
-    token_type: Literal["Bearer"]
+    redirect_uri: str
+    open_browser: NotRequired[bool]
 
 
 class PlaylistConfig(TypedDict):
@@ -21,6 +16,10 @@ class PlaylistConfig(TypedDict):
 
 
 class SyncConfig(TypedDict):
+    """ Contents of config.yml; see example_config.yml """
     spotify: SpotifyConfig
-    sync_playlists: Optional[List[PlaylistConfig]]
-    excluded_playlists: Optional[List[str]]
+    sync_playlists: NotRequired[List[PlaylistConfig]]
+    excluded_playlists: NotRequired[List[str]]
+    sync_favorites_default: NotRequired[bool]
+    max_concurrency: NotRequired[int]
+    rate_limit: NotRequired[float]
