@@ -53,16 +53,14 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
 The sync code currently assumes one user, a terminal, and files in the working directory.
 
 - [ ] **R1. No `sys.exit` / `print` in library code.** Raise typed exceptions; report progress through a callback/event interface (CLI keeps `tqdm` via an adapter).
-- [ ] **R2. Per-user state.** Spotify/Tidal tokens, config, match-failure cache passed in explicitly instead of `config.yml` / `.session.yml` / `.cache.db` in the CWD. Remove module-level singletons (`TrackMatchCache.data` is a class attribute shared by all instances).
+- [ ] **R2. Per-user state behind a storage interface.** Spotify/Tidal tokens, config, match-failure cache passed in explicitly instead of `config.yml` / `.session.yml` / `.cache.db` in the CWD. Container disks are ephemeral (H1), so state goes through a storage interface: local files for the CLI, D1/R2 (or Durable Object storage) in production. Remove module-level singletons (`TrackMatchCache.data` is a class attribute shared by all instances).
 - [ ] **R3. Pluggable auth flows.** Spotify OAuth with a hosted HTTPS redirect URI; Tidal device-login returning the link/code to the UI instead of opening a browser.
 - [ ] **R4. Playlist pairing by stored ID**, not by name, so renames don't create duplicates.
 
 ## Phase 5 — Web UI & hosting (Cloudflare)
 
-- [ ] **H1. Decide architecture.** Python `requests`-based libs and threads won't run on Python Workers, and syncs outlast Worker request limits. Options:
-  - (a) Cloudflare Containers running the Python app (least rewriting);
-  - (b) TypeScript rewrite on Workers + Queues/Durable Objects, calling Spotify/Tidal HTTP APIs directly;
-  - (c) Workers/Pages frontend + Python backend elsewhere.
+- [x] **H1. Decide architecture.** _Decided 2026-10-24: (a) Cloudflare Containers running the Python app._ Python Workers can't run threads or `requests`; a TypeScript rewrite would depend on TIDAL's official API, whose playlist/collection write support and throttling are unproven. Containers: Workers Paid ($5/mo), ephemeral disk, reached via Worker → Durable Object, sleep after inactivity (default 10 min). Revisit the official TIDAL API later (tidalapi uses TIDAL's own client credentials).
+- [ ] **H0. Container sleep spike.** Deploy a throwaway container running a fake 20-minute job while a page polls its progress; confirm the instance isn't stopped mid-job (else keep it alive from the Durable Object). Needs a Cloudflare account on Workers Paid.
 - [ ] **H2. Build UI:** log in with Spotify + Tidal, pick playlists, start sync, live progress, "not found" list.
 - [ ] **H3. Secrets & data:** token encryption at rest, per-user storage, rate limits shared across users.
 - [ ] **H4. Spotify app limits:** owner needs Premium; Dev Mode user cap (5 for apps created after 2026-02-11) — add friends' emails in the Spotify dashboard.
