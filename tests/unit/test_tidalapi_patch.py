@@ -9,6 +9,7 @@ from unittest import mock
 from pytest_mock import MockerFixture
 from tidalapi.playlist import UserPlaylist
 
+from conftest import RecordingReporter
 from spotify_to_tidal.tidalapi_patch import _get_all_chunks, add_multiple_tracks_to_playlist, clear_tidal_playlist
 
 
@@ -97,10 +98,11 @@ def test_add_gives_up_after_five_attempts(sleeps: List[float]):
     assert sleeps == [1, 2, 4, 8]
 
 
-def test_add_in_chunks(sleeps: List[float]):
+def test_add_in_chunks(sleeps: List[float], reporter: RecordingReporter):
     playlist = FakePlaylist()
     add_multiple_tracks_to_playlist(as_user_playlist(playlist), list(range(45)), chunk_size=20)
     assert [len(chunk) for chunk in playlist.added] == [20, 20, 5]
+    assert reporter.progress_summary() == [("Adding new tracks to Tidal playlist", 45, 45)]
 
 
 def test_clear_retries_delete_with_refreshed_etag(sleeps: List[float]):
@@ -114,9 +116,10 @@ def test_clear_retries_delete_with_refreshed_etag(sleeps: List[float]):
     assert sleeps == [1]
 
 
-def test_clear_in_chunks(sleeps: List[float]):
+def test_clear_in_chunks(sleeps: List[float], reporter: RecordingReporter):
     playlist = FakePlaylist(num_tracks=45)
     clear_tidal_playlist(as_user_playlist(playlist), chunk_size=20)
+    assert reporter.progress_summary() == [("Erasing existing tracks from Tidal playlist", 45, 45)]
     assert playlist.num_tracks == 0
     assert len(playlist.deletes) == 3
     assert sleeps == []

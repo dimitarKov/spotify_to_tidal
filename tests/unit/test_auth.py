@@ -1,8 +1,10 @@
 # tests/unit/test_auth.py
 
+import pytest
 import spotipy
 from pytest_mock import MockerFixture
 from spotify_to_tidal.auth import open_spotify_session, SPOTIFY_SCOPES
+from spotify_to_tidal.errors import SpotifyAuthError
 from spotify_to_tidal.type import SpotifyConfig
 
 
@@ -64,9 +66,7 @@ def test_open_spotify_session_oauth_error(mocker: MockerFixture):
         "redirect_uri": "http://127.0.0.1/",
     }
 
-    # Mock sys.exit to prevent the test from exiting
-    mock_sys_exit = mocker.patch("sys.exit")
-
-    # Call the function under test and assert sys.exit is called
-    open_spotify_session(mock_config)
-    mock_sys_exit.assert_called_once_with("Error opening Spotify session; could not get token for username: test_user")
+    # Call the function under test and assert a SpotifyAuthError naming the user is raised
+    with pytest.raises(SpotifyAuthError, match="could not get token for username: test_user") as error:
+        open_spotify_session(mock_config)
+    assert isinstance(error.value.__cause__, spotipy.SpotifyOauthError)

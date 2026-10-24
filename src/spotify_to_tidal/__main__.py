@@ -4,6 +4,7 @@ import sys
 
 from . import sync as _sync
 from . import auth as _auth
+from .errors import SyncError
 from .type import SyncConfig
 
 def main():
@@ -12,7 +13,15 @@ def main():
     parser.add_argument('--uri', help='synchronize a specific URI instead of the one in the config')
     parser.add_argument('--sync-favorites', action=argparse.BooleanOptionalAction, help='synchronize the favorites')
     args = parser.parse_args()
+    try:
+        run(args)
+    except SyncError as e:
+        message = f"Error: {e}"
+        if e.__cause__ is not None:
+            message += f"\n  caused by: {e.__cause__!r}"
+        sys.exit(message)
 
+def run(args: argparse.Namespace):
     with open(args.config, 'r') as f:
         config: SyncConfig = yaml.safe_load(f)
     print("Opening Spotify session")

@@ -10,8 +10,8 @@ from tidalapi.media import Track
 from tidalapi.playlist import Playlist, UserPlaylist
 from tidalapi.session import Session
 from tidalapi.user import Favorites, User
-from tqdm import tqdm
 from .progress import gather_with_progress
+from .reporting import get_reporter
 
 T = TypeVar('T')
 
@@ -41,7 +41,7 @@ def _remove_indices_from_playlist(playlist: UserPlaylist, indices: Sequence[int]
     playlist._reparse()
 
 def clear_tidal_playlist(playlist: UserPlaylist, chunk_size: int=20):
-    with tqdm(desc="Erasing existing tracks from Tidal playlist", total=playlist.num_tracks) as progress:
+    with get_reporter().progress("Erasing existing tracks from Tidal playlist", total=playlist.num_tracks) as progress:
         while playlist.num_tracks:
             indices = range(min(playlist.num_tracks, chunk_size))
             _remove_indices_from_playlist(playlist, indices)
@@ -49,7 +49,7 @@ def clear_tidal_playlist(playlist: UserPlaylist, chunk_size: int=20):
 
 def add_multiple_tracks_to_playlist(playlist: UserPlaylist, track_ids: Sequence[int], chunk_size: int=20):
     offset = 0
-    with tqdm(desc="Adding new tracks to Tidal playlist", total=len(track_ids)) as progress:
+    with get_reporter().progress("Adding new tracks to Tidal playlist", total=len(track_ids)) as progress:
         while offset < len(track_ids):
             count = min(chunk_size, len(track_ids) - offset)
             chunk = [str(track_id) for track_id in track_ids[offset:offset+chunk_size]]
@@ -96,7 +96,7 @@ async def get_all_favorites(favorites: Favorites, order: str = "NAME", order_dir
 
 async def get_all_playlists(user: User, chunk_size: int=10) -> List[Playlist]:
     """ Get all user playlists from Tidal in chunks """
-    print(f"Loading playlists from Tidal user")
+    get_reporter().info("Loading playlists from Tidal user")
     params: Dict[str, Any] = {
         "limit": chunk_size,
     }
@@ -107,5 +107,5 @@ async def get_all_playlist_tracks(playlist: Playlist, chunk_size: int=20) -> Lis
     params: Dict[str, Any] = {
         "limit": chunk_size,
     }
-    print(f"Loading tracks from Tidal playlist '{playlist.name}'")
+    get_reporter().info(f"Loading tracks from Tidal playlist '{playlist.name}'")
     return await _get_all_chunks(f"{playlist._base_url%playlist.id}/tracks", session=playlist.session, parser=playlist.session.parse_track, params=params)

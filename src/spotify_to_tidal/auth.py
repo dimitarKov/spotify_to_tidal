@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
-import sys
 import spotipy
 import webbrowser
 import yaml
 from typing import Any
 from tidalapi.session import Config, Session
 
+from .errors import SpotifyAuthError, TidalAuthError
+from .reporting import get_reporter
 from .type import SpotifyConfig
 
 __all__ = [
@@ -26,8 +27,8 @@ def open_spotify_session(config: SpotifyConfig) -> spotipy.Spotify:
        open_browser=config.get('open_browser', True))
     try:
         credentials_manager.get_access_token(as_dict=False)
-    except spotipy.SpotifyOauthError:
-        sys.exit("Error opening Spotify session; could not get token for username: {}".format(config['username']))
+    except spotipy.SpotifyOauthError as e:
+        raise SpotifyAuthError("Error opening Spotify session; could not get token for username: {}".format(config['username'])) from e
 
     return spotipy.Spotify(oauth_manager=credentials_manager)
 
@@ -49,15 +50,18 @@ def open_tidal_session(config: Config | None = None) -> Session:
                                    refresh_token=previous_session['refresh_token'] ):
                 return session
         except Exception as e:
-            print("Error loading previous Tidal Session: \n" + str(e) )
+            get_reporter().warning("Error loading previous Tidal Session: \n" + str(e) )
 
     login, future = session.login_oauth()
-    print('Login with the webbrowser: ' + login.verification_uri_complete)
+    get_reporter().info('Login with the webbrowser: ' + login.verification_uri_complete)
     url = login.verification_uri_complete
     if not url.startswith('https://'):
         url = 'https://' + url
     webbrowser.open(url)
-    future.result()
+    try:
+        future.result()
+    except Exception as e:
+        raise TidalAuthError("Tidal login failed or timed out") from e
     with open('.session.yml', 'w') as f:
         yaml.dump( {'session_id': session.session_id,
                    'token_type': session.token_type,

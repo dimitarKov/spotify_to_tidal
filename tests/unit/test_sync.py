@@ -11,8 +11,10 @@ from unittest import mock
 from pytest_mock import MockerFixture
 from tidalapi.exceptions import TooManyRequests
 
+from conftest import RecordingReporter
 from spotify_to_tidal import sync as _sync
 from spotify_to_tidal.sync import _extract_track, _is_transient_error, artist_match, get_tracks_from_spotify_playlist, repeat_on_request_error, simple_artist
+from spotify_to_tidal.errors import RetriesExhaustedError
 from spotify_to_tidal.rate_limiter import RateLimiter
 from spotify_to_tidal.type import SpotifyPlaylist, SpotifyTrack, SyncConfig
 
@@ -188,16 +190,19 @@ def test_tidal_retry_after_is_respected(sleeps: List[float]):
     assert sleeps == [3]
 
 
-def test_gives_up_after_retries_are_exhausted(sleeps: List[float]):
-    function, calls = failing_then([spotify_error(500)] * 6)
-    with pytest.raises(SystemExit):
+def test_gives_up_after_retries_are_exhausted(sleeps: List[float], reporter: RecordingReporter):
+    error = spotify_error(500)
+    function, calls = failing_then([error] * 6)
+    with pytest.raises(RetriesExhaustedError, match="giving up") as raised:
         asyncio.run(repeat_on_request_error(function))
+    assert raised.value.__cause__ is error
     assert len(calls) == 6
+    assert len(reporter.warnings) == 5  # one per retry
 
 
 def test_gives_up_when_asked_to_wait_too_long(sleeps: List[float]):
     function, calls = failing_then([spotify_error(429, headers={"Retry-After": "86400"}), "ok"])
-    with pytest.raises(SystemExit):
+    with pytest.raises(RetriesExhaustedError):
         asyncio.run(repeat_on_request_error(function))
     assert len(calls) == 1
     assert sleeps == []
@@ -207,7 +212,7 @@ def test_gives_up_when_asked_to_wait_too_long(sleeps: List[float]):
 EMPTY_CONFIG: SyncConfig = {"spotify": {"client_id": "", "client_secret": "", "username": "", "redirect_uri": ""}}
 
 
-def test_inaccessible_playlist_is_skipped(mocker: MockerFixture):
+def test_inaccessible_playlist_is_skipped(mocker: MockerFixture, reporter: RecordingReporter):
     synced: List[str] = []
 
     async def fake_sync_playlist(spotify_session: Any, tidal_session: Any, spotify_playlist: SpotifyPlaylist, tidal_playlist: Any, config: Any):
@@ -219,6 +224,7 @@ def test_inaccessible_playlist_is_skipped(mocker: MockerFixture):
     playlists: List[_sync.PlaylistMapping] = [(make_playlist("not-mine", "Not mine"), None), (make_playlist("mine", "Mine"), None)]
     _sync.sync_playlists_wrapper(mock.Mock(), mock.Mock(), playlists, EMPTY_CONFIG)
     assert synced == ["mine"]
+    assert reporter.warnings == ["Skipping Spotify playlist 'Not mine': access denied or not found (403)"]
 
 
 def test_other_spotify_errors_still_abort(mocker: MockerFixture):
