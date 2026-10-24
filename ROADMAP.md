@@ -14,7 +14,7 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
 
 ## Phase 1 — Make it work again (critical)
 
-- [ ] **B1. Spotify playlist entries renamed `track` → `item`.** Every playlist sync crashes with `KeyError: 'track'`.
+- [x] **B1. Spotify playlist entries renamed `track` → `item`.** _(unit-tested; live test pending a Spotify dev app)_ Every playlist sync crashes with `KeyError: 'track'`.
   - `sync.py` `_fetch_all_from_spotify_in_chunks` and the `fields` string in `get_tracks_from_spotify_playlist`.
   - Fix: request `items(item(...))`, read `entry.get('item')`, fall back to `entry.get('track')`, accept only dicts (`track` can now be the boolean `true`). Liked Songs (`/me/tracks`) still use `track` — the helper must handle both.
   - Pin `spotipy~=2.26` (first version using `/playlists/{id}/items`).
