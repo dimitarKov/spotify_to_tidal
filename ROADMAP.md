@@ -22,7 +22,7 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
   - Retry only on 429 / 5xx / network errors; respect `Retry-After`; on `QUOTA_EXCEEDED` stop retrying.
   - On 403/404 for a playlist: log it, skip that playlist, continue the run (playlists you don't own now return 403).
   - Replace `time.sleep` with `await asyncio.sleep` so one retry doesn't freeze all concurrent searches.
-- [ ] **B3. Tidal `412` ETag errors on playlist writes.** Sync aborts mid-rewrite, can leave a playlist half-erased.
+- [x] **B3. Tidal `412` ETag errors on playlist writes.** Sync aborts mid-rewrite, can leave a playlist half-erased.
   - `tidalapi_patch.py` `_remove_indices_from_playlist`, `add_multiple_tracks_to_playlist`.
   - Fix: on 412 only — refresh playlist/ETag, exponential back-off, retry up to 5 times; build headers inside the retried call.
 - [ ] **B4. Unavailable Tidal album crashes the search.** `album.tracks()` can raise `ObjectNotFound`; the `assert` in `_search_for_track_in_album` can fire.
