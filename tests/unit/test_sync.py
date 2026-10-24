@@ -5,6 +5,7 @@ import asyncio
 import pytest
 import requests
 import spotipy
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Sequence
 from unittest import mock
 from pytest_mock import MockerFixture
@@ -287,3 +288,39 @@ def test_tidal_search_records_failure_when_nothing_matches(failure_cache: mock.M
     session = fake_tidal_session(albums=[tidal_album(1, ObjectNotFound("Object not found"))], tracks=[tidal_track("other", name="Other Tune")])
     assert run_tidal_search(make_track("a"), session) is None
     failure_cache.cache_match_failure.assert_called_once_with("a")
+
+
+# Test search_new_tracks_on_tidal's "songs not found.txt"
+
+
+@pytest.fixture
+def in_tmp_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def run_search_new_tracks(mocker: MockerFixture, found: Dict[str, Any], tracks: List[SpotifyTrack]):
+    """ Runs search_new_tracks_on_tidal with tidal_search returning found[spotify_id] (None if missing) """
+    async def fake_tidal_search(spotify_track: SpotifyTrack, *args: Any) -> Any:
+        return found.get(spotify_track["id"] or "")
+
+    def all_tracks_are_new(spotify_tracks: Sequence[SpotifyTrack]) -> List[SpotifyTrack]:
+        return list(spotify_tracks)
+
+    mocker.patch.object(_sync, "tidal_search", fake_tidal_search)
+    mocker.patch.object(_sync, "get_new_spotify_tracks", all_tracks_are_new)
+    mocker.patch.object(_sync, "track_match_cache")
+    asyncio.run(_sync.search_new_tracks_on_tidal(mock.Mock(), tracks, "My Playlist", EMPTY_CONFIG))
+
+
+def test_not_found_file_lists_missing_tracks(mocker: MockerFixture, in_tmp_dir: Path):
+    run_search_new_tracks(mocker, found={"a": SimpleNamespace(id=1)}, tracks=[make_track("a"), make_track("b", name="Lost")])
+    content = (in_tmp_dir / "songs not found.txt").read_text(encoding="utf-8")
+    assert "Playlist: My Playlist" in content
+    assert "b: Artist - Lost" in content
+    assert "a: " not in content
+
+
+def test_not_found_file_not_written_when_everything_is_found(mocker: MockerFixture, in_tmp_dir: Path):
+    run_search_new_tracks(mocker, found={"a": SimpleNamespace(id=1)}, tracks=[make_track("a")])
+    assert not (in_tmp_dir / "songs not found.txt").exists()

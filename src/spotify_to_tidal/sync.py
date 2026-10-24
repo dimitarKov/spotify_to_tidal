@@ -347,6 +347,8 @@ async def search_new_tracks_on_tidal(tidal_session: Session, spotify_tracks: Seq
             song404.append(f"{spotify_id}: {_artist_names(spotify_track, ',')} - {spotify_track['name']}")
             color = ('\033[91m', '\033[0m')
             print(color[0] + "Could not find the track " + song404[-1] + color[1])
+    if not song404:
+        return
     file_name = "songs not found.txt"
     header = f"==========================\nPlaylist: {playlist_name}\n==========================\n"
     with open(file_name, "a", encoding="utf-8") as file:
