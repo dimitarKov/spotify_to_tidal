@@ -12,7 +12,6 @@ import sys
 import spotipy
 import tidalapi
 from .tidalapi_patch import add_multiple_tracks_to_playlist, clear_tidal_playlist, get_all_favorites, get_all_playlists, get_all_playlist_tracks
-import time
 from tqdm.asyncio import tqdm as atqdm
 from tqdm import tqdm
 import traceback
@@ -134,12 +133,48 @@ async def tidal_search(spotify_track, rate_limiter, tidal_session: tidalapi.Sess
     # if none of the search modes succeeded then store the track id to the failure cache
     failure_cache.cache_match_failure(spotify_track['id'])
 
+MAX_RETRY_AFTER = 10*60 # if a server asks us to wait longer than this, give up instead
+
+def _is_transient_error(e: Exception) -> bool:
+    """ True for errors worth retrying: rate limits, server errors and network failures """
+    if isinstance(e, tidalapi.exceptions.TooManyRequests):
+        return True
+    if isinstance(e, spotipy.exceptions.SpotifyException):
+        # QUOTA_EXCEEDED is a 429 that won't clear up by retrying soon
+        return (e.http_status == 429 and e.reason != 'QUOTA_EXCEEDED') or e.http_status >= 500
+    if isinstance(e, requests.exceptions.HTTPError):
+        return e.response is not None and (e.response.status_code == 429 or e.response.status_code >= 500)
+    # connection errors, timeouts etc.
+    return isinstance(e, requests.exceptions.RequestException)
+
+def _get_retry_after(e: Exception) -> int | None:
+    """ Seconds the server asked us to wait before retrying, if it said """
+    if isinstance(e, tidalapi.exceptions.TooManyRequests):
+        return e.retry_after if e.retry_after >= 0 else None
+    if isinstance(e, spotipy.exceptions.SpotifyException):
+        headers = e.headers
+    elif isinstance(e, requests.exceptions.RequestException) and e.response is not None:
+        headers = e.response.headers
+    else:
+        return None
+    try:
+        return int(headers.get('Retry-After'))
+    except (TypeError, ValueError):
+        return None
+
 async def repeat_on_request_error(function, *args, remaining=5, **kwargs):
-    # utility to repeat calling the function up to 5 times if an exception is thrown
+    # utility to repeat calling the function up to 5 times if a transient error is thrown
+    # other errors (e.g. 403/404) are raised immediately for the caller to handle
     try:
         return await function(*args, **kwargs)
     except (tidalapi.exceptions.TooManyRequests, requests.exceptions.RequestException, spotipy.exceptions.SpotifyException) as e:
-        if remaining:
+        if not _is_transient_error(e):
+            raise
+        retry_after = _get_retry_after(e)
+        if retry_after is not None and retry_after > MAX_RETRY_AFTER:
+            print(f"{str(e)} occurred and the server asked to wait {retry_after}s")
+            remaining = 0
+        elif remaining:
             print(f"{str(e)} occurred, retrying {remaining} times")
         else:
             print(f"{str(e)} could not be recovered")
@@ -154,7 +189,7 @@ async def repeat_on_request_error(function, *args, remaining=5, **kwargs):
             print(traceback.format_exc())
             sys.exit(1)
         sleep_schedule = {5: 1, 4:10, 3:60, 2:5*60, 1:10*60} # sleep variable length of time depending on retry number
-        time.sleep(sleep_schedule.get(remaining, 1))
+        await asyncio.sleep(retry_after if retry_after is not None else sleep_schedule.get(remaining, 1))
         return await repeat_on_request_error(function, *args, remaining=remaining-1, **kwargs)
 
 
@@ -362,7 +397,13 @@ async def sync_favorites(spotify_session: spotipy.Spotify, tidal_session: tidala
 def sync_playlists_wrapper(spotify_session: spotipy.Spotify, tidal_session: tidalapi.Session, playlists, config: dict):
   for spotify_playlist, tidal_playlist in playlists:
     # sync the spotify playlist to tidal
-    asyncio.run(sync_playlist(spotify_session, tidal_session, spotify_playlist, tidal_playlist, config) )
+    try:
+      asyncio.run(sync_playlist(spotify_session, tidal_session, spotify_playlist, tidal_playlist, config) )
+    except spotipy.exceptions.SpotifyException as e:
+      if e.http_status not in (403, 404):
+        raise
+      # Spotify only returns the contents of playlists the user owns or collaborates on
+      print(f"Skipping Spotify playlist '{spotify_playlist['name']}': access denied or not found ({e.http_status})")
 
 def sync_favorites_wrapper(spotify_session: spotipy.Spotify, tidal_session: tidalapi.Session, config):
     asyncio.run(main=sync_favorites(spotify_session=spotify_session, tidal_session=tidal_session, config=config))

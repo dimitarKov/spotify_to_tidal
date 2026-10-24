@@ -76,3 +76,140 @@ def test_get_tracks_from_spotify_playlist_filters_episodes_and_empty_entries():
     tracks = asyncio.run(get_tracks_from_spotify_playlist(session, {"id": "pl", "name": "Playlist"}))
 
     assert [t["id"] for t in tracks] == ["a", "legacy"]
+
+
+# Test repeat_on_request_error
+import pytest
+import requests
+import spotipy
+import tidalapi
+from spotify_to_tidal import sync as _sync
+from spotify_to_tidal.sync import _is_transient_error, repeat_on_request_error
+
+
+def spotify_error(status, reason=None, headers=None):
+    return spotipy.exceptions.SpotifyException(status, -1, "error", reason=reason, headers=headers)
+
+
+def http_error(status, headers=None):
+    response = requests.Response()
+    response.status_code = status
+    response.headers.update(headers or {})
+    return requests.exceptions.HTTPError(response=response)
+
+
+@pytest.fixture
+def sleeps(mocker):
+    """ Replaces asyncio.sleep in sync.py and records requested durations """
+    recorded = []
+
+    async def fake_sleep(seconds):
+        recorded.append(seconds)
+
+    mocker.patch.object(_sync.asyncio, "sleep", fake_sleep)
+    return recorded
+
+
+def failing_then(results):
+    """ Async function that raises/returns each item of results in turn """
+    calls = []
+
+    async def function(*args, **kwargs):
+        calls.append(args)
+        result = results[len(calls) - 1]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    return function, calls
+
+
+@pytest.mark.parametrize("error, expected", [
+    (spotify_error(429), True),
+    (spotify_error(503), True),
+    (spotify_error(429, reason="QUOTA_EXCEEDED"), False),
+    (spotify_error(403), False),
+    (spotify_error(404), False),
+    (http_error(429), True),
+    (http_error(502), True),
+    (http_error(412), False),
+    (http_error(404), False),
+    (requests.exceptions.ConnectionError(), True),
+    (requests.exceptions.Timeout(), True),
+    (tidalapi.exceptions.TooManyRequests(), True),
+])
+def test_is_transient_error(error, expected):
+    assert _is_transient_error(error) is expected
+
+
+def test_non_transient_error_is_raised_without_retrying(sleeps):
+    function, calls = failing_then([spotify_error(403)])
+    with pytest.raises(spotipy.exceptions.SpotifyException):
+        asyncio.run(repeat_on_request_error(function))
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_quota_exceeded_is_not_retried(sleeps):
+    function, calls = failing_then([spotify_error(429, reason="QUOTA_EXCEEDED")])
+    with pytest.raises(spotipy.exceptions.SpotifyException):
+        asyncio.run(repeat_on_request_error(function))
+    assert len(calls) == 1
+
+
+def test_transient_error_is_retried_until_success(sleeps):
+    function, calls = failing_then([requests.exceptions.ConnectionError(), spotify_error(503), "ok"])
+    assert asyncio.run(repeat_on_request_error(function)) == "ok"
+    assert len(calls) == 3
+    assert sleeps == [1, 10]  # default back-off schedule
+
+
+def test_retry_after_header_is_respected(sleeps):
+    function, _ = failing_then([spotify_error(429, headers={"Retry-After": "7"}), "ok"])
+    assert asyncio.run(repeat_on_request_error(function)) == "ok"
+    assert sleeps == [7]
+
+
+def test_tidal_retry_after_is_respected(sleeps):
+    function, _ = failing_then([tidalapi.exceptions.TooManyRequests(retry_after=3), "ok"])
+    assert asyncio.run(repeat_on_request_error(function)) == "ok"
+    assert sleeps == [3]
+
+
+def test_gives_up_after_retries_are_exhausted(sleeps):
+    function, calls = failing_then([spotify_error(500)] * 6)
+    with pytest.raises(SystemExit):
+        asyncio.run(repeat_on_request_error(function))
+    assert len(calls) == 6
+
+
+def test_gives_up_when_asked_to_wait_too_long(sleeps):
+    function, calls = failing_then([spotify_error(429, headers={"Retry-After": "86400"}), "ok"])
+    with pytest.raises(SystemExit):
+        asyncio.run(repeat_on_request_error(function))
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+# Test sync_playlists_wrapper
+def test_inaccessible_playlist_is_skipped(mocker):
+    synced = []
+
+    async def fake_sync_playlist(spotify_session, tidal_session, spotify_playlist, tidal_playlist, config):
+        if spotify_playlist["id"] == "not-mine":
+            raise spotify_error(403)
+        synced.append(spotify_playlist["id"])
+
+    mocker.patch.object(_sync, "sync_playlist", fake_sync_playlist)
+    playlists = [({"id": "not-mine", "name": "Not mine"}, None), ({"id": "mine", "name": "Mine"}, None)]
+    _sync.sync_playlists_wrapper(None, None, playlists, {})
+    assert synced == ["mine"]
+
+
+def test_other_spotify_errors_still_abort(mocker):
+    async def fake_sync_playlist(*args):
+        raise spotify_error(400)
+
+    mocker.patch.object(_sync, "sync_playlist", fake_sync_playlist)
+    with pytest.raises(spotipy.exceptions.SpotifyException):
+        _sync.sync_playlists_wrapper(None, None, [({"id": "x", "name": "X"}, None)], {})
