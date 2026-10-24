@@ -39,7 +39,7 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
 - [x] **B8. Rate limiter can over-release.** `_run_rate_limiter` calls `Semaphore.release()` without a cap, so after idle periods bursts exceed `max_concurrency`.
   - Fix: only release up to the configured capacity.
 - [x] **B9. Spotify login error message broken.** `auth.py` `.format()` without `{}`; `requests_timeout=2` is too aggressive (raise to ~10).
-- [ ] **B10. "songs not found.txt" gets empty headers.** Only write the playlist header when there are missing songs.
+- [x] **B10. "songs not found.txt" gets empty headers.** Only write the playlist header when there are missing songs.
 
 ## Phase 3 — Matching improvements
 
