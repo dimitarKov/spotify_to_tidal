@@ -1,8 +1,11 @@
 # tests/unit/test_cache.py
 
+import datetime
 import pytest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from pytest_mock import MockerFixture
-from sqlalchemy import Engine, create_engine, select
+from sqlalchemy import Engine, create_engine, select, update
 from spotify_to_tidal.cache import MatchFailureDatabase, TrackMatchCache
 
 
@@ -78,8 +81,6 @@ def test_track_match_cache_get():
     assert track_cache.get("nonexistent_id") is None
 
 # Test concurrent use (tidal_search runs up to max_concurrency searches in threads)
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 
 def test_concurrent_writes_from_many_threads(tmp_path: Path):
@@ -116,3 +117,56 @@ def test_write_ahead_log_enabled(tmp_path: Path):
     failure_db = MatchFailureDatabase(str(tmp_path / "cache.db"))
     with failure_db.engine.connect() as connection:
         assert connection.exec_driver_sql("PRAGMA journal_mode").scalar() == "wal"
+
+
+# Test retry back-off
+
+
+def get_failure_times(failure_db: MatchFailureDatabase, track_id: str) -> tuple[datetime.datetime, datetime.datetime]:
+    with failure_db.engine.connect() as connection:
+        row = connection.execute(select(failure_db.match_failures).where(failure_db.match_failures.c.track_id == track_id)).one()
+    return row.insert_time, row.next_retry
+
+
+def first_failed_days_ago(failure_db: MatchFailureDatabase, track_id: str, days: float):
+    with failure_db.engine.connect() as connection:
+        with connection.begin():
+            connection.execute(update(failure_db.match_failures)
+                               .where(failure_db.match_failures.c.track_id == track_id)
+                               .values(insert_time=datetime.datetime.now() - datetime.timedelta(days=days)))
+
+
+def days_from_now(time: datetime.datetime) -> float:
+    return (time - datetime.datetime.now()) / datetime.timedelta(days=1)
+
+
+def test_first_failure_waits_a_week(tmp_path: Path):
+    failure_db = MatchFailureDatabase(str(tmp_path / "cache.db"))
+    failure_db.cache_match_failure("track")
+    _, next_retry = get_failure_times(failure_db, "track")
+    assert abs(days_from_now(next_retry) - 7) < 0.01
+
+
+def test_quick_repeated_failure_still_waits_a_week(tmp_path: Path):
+    failure_db = MatchFailureDatabase(str(tmp_path / "cache.db"))
+    failure_db.cache_match_failure("track")
+    failure_db.cache_match_failure("track")
+    _, next_retry = get_failure_times(failure_db, "track")
+    assert abs(days_from_now(next_retry) - 7) < 0.01
+
+
+def test_repeated_failures_double_the_wait(tmp_path: Path):
+    failure_db = MatchFailureDatabase(str(tmp_path / "cache.db"))
+    failure_db.cache_match_failure("track")
+
+    # retried after the first week and failed again: wait twice the time since the first failure
+    first_failed_days_ago(failure_db, "track", 7)
+    failure_db.cache_match_failure("track")
+    _, next_retry = get_failure_times(failure_db, "track")
+    assert abs(days_from_now(next_retry) - 14) < 0.01
+
+    # failed again 21 days after the first failure: wait 42 days
+    first_failed_days_ago(failure_db, "track", 21)
+    failure_db.cache_match_failure("track")
+    _, next_retry = get_failure_times(failure_db, "track")
+    assert abs(days_from_now(next_retry) - 42) < 0.01

@@ -32,21 +32,28 @@ class MatchFailureDatabase:
         meta.create_all(self.engine)
 
     def _get_next_retry_time(self, insert_time: datetime.datetime | None = None) -> datetime.datetime:
+        first_interval = datetime.timedelta(days=7)
         if insert_time:
-            # double interval on each retry
-            interval = 2 * (datetime.datetime.now() - insert_time)
+            # double interval on each retry. Never less than the first interval, e.g. if the same track
+            # failed twice in quick succession (a playlist containing it twice)
+            interval = max(first_interval, 2 * (datetime.datetime.now() - insert_time))
         else:
-            interval = datetime.timedelta(days=7)
+            interval = first_interval
         return datetime.datetime.now() + interval
 
     def cache_match_failure(self, track_id: str):
         """ notifies that matching failed for the given track_id """
         # Either update the next_retry time if track_id already exists, otherwise create a new entry.
-        # A single upsert statement, so concurrent callers can't both insert the same track_id
-        next_retry = self._get_next_retry_time()
+        # The write is a single upsert statement, so concurrent callers can't both insert the same track_id.
+        # The existing row is read beforehand, outside the write transaction, to avoid read-then-write deadlocks
+        insert_time_statement = select(self.match_failures.c.insert_time).where(
+            self.match_failures.c.track_id == track_id)
+        with self.engine.connect() as connection:
+            insert_time: datetime.datetime | None = connection.execute(insert_time_statement).scalar()
         statement = sqlite_insert(self.match_failures).values(
-            track_id=track_id, insert_time=datetime.datetime.now(), next_retry=next_retry
-        ).on_conflict_do_update(index_elements=[self.match_failures.c.track_id], set_={"next_retry": next_retry})
+            track_id=track_id, insert_time=datetime.datetime.now(), next_retry=self._get_next_retry_time()
+        ).on_conflict_do_update(index_elements=[self.match_failures.c.track_id],
+                                set_={"next_retry": self._get_next_retry_time(insert_time)})
         with self.engine.connect() as connection:
             with connection.begin():
                 connection.execute(statement)
