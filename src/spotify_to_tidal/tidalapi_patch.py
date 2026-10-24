@@ -3,6 +3,8 @@
 
 import asyncio
 import math
+import requests
+import time
 from typing import Any, Callable, Dict, List, Sequence, TypeVar
 from tidalapi.media import Track
 from tidalapi.playlist import Playlist, UserPlaylist
@@ -13,12 +15,29 @@ from .progress import gather_with_progress
 
 T = TypeVar('T')
 
+def _retry_on_stale_etag(playlist: UserPlaylist, write: Callable[[], T], attempts: int = 5, base_delay: float = 1) -> T:
+    """ Tidal rejects playlist writes with 412 Precondition Failed when the ETag we send is stale, which happens
+        during rapid chunked edits as its replicas lag behind. The write was not applied, so refresh the ETag,
+        back off and try again. Any other error is raised immediately """
+    for attempt in range(attempts):
+        try:
+            return write()
+        except requests.HTTPError as e:
+            if e.response is None or e.response.status_code != 412 or attempt == attempts - 1:
+                raise
+            time.sleep(base_delay * 2**attempt)
+            playlist._reparse()
+    raise AssertionError("unreachable")
+
 def _remove_indices_from_playlist(playlist: UserPlaylist, indices: Sequence[int]):
-    headers: Dict[str, str] = {}
-    if playlist._etag is not None:
-        headers['If-None-Match'] = playlist._etag
-    index_string = ",".join(map(str, indices))
-    playlist.request.request('DELETE', (playlist._base_url + '/items/%s') % (playlist.id, index_string), headers=headers)
+    def _delete():
+        # build the headers on each attempt so a retry sends the refreshed ETag
+        headers: Dict[str, str] = {}
+        if playlist._etag is not None:
+            headers['If-None-Match'] = playlist._etag
+        index_string = ",".join(map(str, indices))
+        playlist.request.request('DELETE', (playlist._base_url + '/items/%s') % (playlist.id, index_string), headers=headers)
+    _retry_on_stale_etag(playlist, _delete)
     playlist._reparse()
 
 def clear_tidal_playlist(playlist: UserPlaylist, chunk_size: int=20):
@@ -33,7 +52,8 @@ def add_multiple_tracks_to_playlist(playlist: UserPlaylist, track_ids: Sequence[
     with tqdm(desc="Adding new tracks to Tidal playlist", total=len(track_ids)) as progress:
         while offset < len(track_ids):
             count = min(chunk_size, len(track_ids) - offset)
-            playlist.add([str(track_id) for track_id in track_ids[offset:offset+chunk_size]])
+            chunk = [str(track_id) for track_id in track_ids[offset:offset+chunk_size]]
+            _retry_on_stale_etag(playlist, lambda: playlist.add(chunk))
             offset += count
             progress.update(count)
 
