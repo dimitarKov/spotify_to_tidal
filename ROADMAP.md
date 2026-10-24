@@ -18,7 +18,7 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
   - `sync.py` `_fetch_all_from_spotify_in_chunks` and the `fields` string in `get_tracks_from_spotify_playlist`.
   - Fix: request `items(item(...))`, read `entry.get('item')`, fall back to `entry.get('track')`, accept only dicts (`track` can now be the boolean `true`). Liked Songs (`/me/tracks`) still use `track` — the helper must handle both.
   - Pin `spotipy~=2.26` (first version using `/playlists/{id}/items`).
-- [ ] **B2. Retry only transient errors.** `repeat_on_request_error` retries every error (incl. 403/404) with ~16 min of sleeps, then `sys.exit(1)`.
+- [x] **B2. Retry only transient errors.** `repeat_on_request_error` retries every error (incl. 403/404) with ~16 min of sleeps, then `sys.exit(1)`.
   - Retry only on 429 / 5xx / network errors; respect `Retry-After`; on `QUOTA_EXCEEDED` stop retrying.
   - On 403/404 for a playlist: log it, skip that playlist, continue the run (playlists you don't own now return 403).
   - Replace `time.sleep` with `await asyncio.sleep` so one retry doesn't freeze all concurrent searches.
