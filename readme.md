@@ -8,6 +8,12 @@ Clone this git repository and then run:
 python3 -m pip install -e .
 ```
 
+For development (includes the test dependencies), then run the tests with `pytest`:
+
+```bash
+python3 -m pip install -e ".[dev]"
+```
+
 Setup
 -----
 0. Rename the file example_config.yml to config.yml
