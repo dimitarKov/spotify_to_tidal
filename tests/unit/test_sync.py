@@ -5,7 +5,6 @@ import asyncio
 import pytest
 import requests
 import spotipy
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Sequence
 from unittest import mock
 from pytest_mock import MockerFixture
@@ -14,7 +13,9 @@ from tidalapi.exceptions import TooManyRequests
 from conftest import RecordingReporter
 from spotify_to_tidal import sync as _sync
 from spotify_to_tidal.sync import _extract_track, _is_transient_error, artist_match, get_tracks_from_spotify_playlist, repeat_on_request_error, simple_artist
+from spotify_to_tidal.context import SyncContext
 from spotify_to_tidal.errors import RetriesExhaustedError
+from spotify_to_tidal.storage import InMemoryNotFoundReport
 from spotify_to_tidal.rate_limiter import RateLimiter
 from spotify_to_tidal.type import SpotifyPlaylist, SpotifyTrack, SyncConfig
 
@@ -215,14 +216,14 @@ EMPTY_CONFIG: SyncConfig = {"spotify": {"client_id": "", "client_secret": "", "u
 def test_inaccessible_playlist_is_skipped(mocker: MockerFixture, reporter: RecordingReporter):
     synced: List[str] = []
 
-    async def fake_sync_playlist(spotify_session: Any, tidal_session: Any, spotify_playlist: SpotifyPlaylist, tidal_playlist: Any, config: Any):
+    async def fake_sync_playlist(context: Any, spotify_session: Any, tidal_session: Any, spotify_playlist: SpotifyPlaylist, tidal_playlist: Any):
         if spotify_playlist["id"] == "not-mine":
             raise spotify_error(403)
         synced.append(spotify_playlist["id"])
 
     mocker.patch.object(_sync, "sync_playlist", fake_sync_playlist)
     playlists: List[_sync.PlaylistMapping] = [(make_playlist("not-mine", "Not mine"), None), (make_playlist("mine", "Mine"), None)]
-    _sync.sync_playlists_wrapper(mock.Mock(), mock.Mock(), playlists, EMPTY_CONFIG)
+    _sync.sync_playlists_wrapper(SyncContext(EMPTY_CONFIG), mock.Mock(), mock.Mock(), playlists)
     assert synced == ["mine"]
     assert reporter.warnings == ["Skipping Spotify playlist 'Not mine': access denied or not found (403)"]
 
@@ -233,7 +234,7 @@ def test_other_spotify_errors_still_abort(mocker: MockerFixture):
 
     mocker.patch.object(_sync, "sync_playlist", fake_sync_playlist)
     with pytest.raises(spotipy.exceptions.SpotifyException):
-        _sync.sync_playlists_wrapper(mock.Mock(), mock.Mock(), [(make_playlist("x", "X"), None)], EMPTY_CONFIG)
+        _sync.sync_playlists_wrapper(SyncContext(EMPTY_CONFIG), mock.Mock(), mock.Mock(), [(make_playlist("x", "X"), None)])
 
 
 # Test tidal_search
@@ -265,12 +266,13 @@ def fake_tidal_session(albums: List[SimpleNamespace], tracks: List[SimpleNamespa
 
 
 @pytest.fixture
-def failure_cache(mocker: MockerFixture) -> mock.Mock:
-    return mocker.patch.object(_sync, "failure_cache")
+def failure_cache() -> mock.Mock:
+    return mock.Mock()
 
 
-def run_tidal_search(spotify_track: SpotifyTrack, session: mock.Mock, isrc_lookup: _sync.IsrcLookup | None = None) -> Track | None:
-    return asyncio.run(_sync.tidal_search(spotify_track, RateLimiter(rate=10, capacity=10), session, isrc_lookup))
+def run_tidal_search(spotify_track: SpotifyTrack, session: mock.Mock, failure_cache: mock.Mock,
+                     isrc_lookup: _sync.IsrcLookup | None = None) -> Track | None:
+    return asyncio.run(_sync.tidal_search(spotify_track, RateLimiter(rate=10, capacity=10), session, failure_cache, isrc_lookup))
 
 
 def test_tidal_search_skips_unavailable_album(failure_cache: mock.Mock):
@@ -278,7 +280,7 @@ def test_tidal_search_skips_unavailable_album(failure_cache: mock.Mock):
     session = fake_tidal_session(
         albums=[tidal_album(1, ObjectNotFound("Object not found")), tidal_album(1, [wanted])],
         tracks=[])
-    assert run_tidal_search(make_track("a"), session) is wanted
+    assert run_tidal_search(make_track("a"), session, failure_cache) is wanted
     failure_cache.remove_match_failure.assert_called_once_with("a")
 
 
@@ -288,49 +290,44 @@ def test_tidal_search_falls_back_to_track_search_when_album_metadata_is_wrong(fa
     spotify_track["track_number"] = 5
     # the album claims 10 tracks but only returns 2
     session = fake_tidal_session(albums=[tidal_album(10, [tidal_track("x"), tidal_track("y")])], tracks=[wanted])
-    assert run_tidal_search(spotify_track, session) is wanted
+    assert run_tidal_search(spotify_track, session, failure_cache) is wanted
 
 
 def test_tidal_search_records_failure_when_nothing_matches(failure_cache: mock.Mock):
     session = fake_tidal_session(albums=[tidal_album(1, ObjectNotFound("Object not found"))], tracks=[tidal_track("other", name="Other Tune")])
-    assert run_tidal_search(make_track("a"), session) is None
+    assert run_tidal_search(make_track("a"), session, failure_cache) is None
     failure_cache.cache_match_failure.assert_called_once_with("a")
 
 
 # Test search_new_tracks_on_tidal's "songs not found.txt"
 
 
-@pytest.fixture
-def in_tmp_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
-    return tmp_path
+def new_context() -> tuple[SyncContext, InMemoryNotFoundReport]:
+    not_found = InMemoryNotFoundReport()
+    return SyncContext(EMPTY_CONFIG, not_found=not_found), not_found
 
 
-def run_search_new_tracks(mocker: MockerFixture, found: Dict[str, Any], tracks: List[SpotifyTrack]):
+def run_search_new_tracks(mocker: MockerFixture, found: Dict[str, Any], tracks: List[SpotifyTrack]) -> tuple[SyncContext, InMemoryNotFoundReport]:
     """ Runs search_new_tracks_on_tidal with tidal_search returning found[spotify_id] (None if missing) """
     async def fake_tidal_search(spotify_track: SpotifyTrack, *args: Any) -> Any:
         return found.get(spotify_track["id"] or "")
 
-    def all_tracks_are_new(spotify_tracks: Sequence[SpotifyTrack]) -> List[SpotifyTrack]:
-        return list(spotify_tracks)
-
     mocker.patch.object(_sync, "tidal_search", fake_tidal_search)
-    mocker.patch.object(_sync, "get_new_spotify_tracks", all_tracks_are_new)
-    mocker.patch.object(_sync, "track_match_cache")
-    asyncio.run(_sync.search_new_tracks_on_tidal(mock.Mock(), tracks, "My Playlist", EMPTY_CONFIG))
+    context, not_found = new_context()
+    asyncio.run(_sync.search_new_tracks_on_tidal(context, mock.Mock(), tracks, "My Playlist"))
+    return context, not_found
 
 
-def test_not_found_file_lists_missing_tracks(mocker: MockerFixture, in_tmp_dir: Path):
-    run_search_new_tracks(mocker, found={"a": SimpleNamespace(id=1)}, tracks=[make_track("a"), make_track("b", name="Lost")])
-    content = (in_tmp_dir / "songs not found.txt").read_text(encoding="utf-8")
-    assert "Playlist: My Playlist" in content
-    assert "b: Artist - Lost" in content
-    assert "a: " not in content
+def test_not_found_report_lists_missing_tracks(mocker: MockerFixture):
+    context, not_found = run_search_new_tracks(mocker, found={"a": SimpleNamespace(id=1)}, tracks=[make_track("a"), make_track("b", name="Lost")])
+    assert list(not_found.playlists) == ["My Playlist"]
+    assert [entry.splitlines()[0] for entry in not_found.playlists["My Playlist"]] == ["b: Artist - Lost"]
+    assert context.track_match_cache.get("a") == 1
 
 
-def test_not_found_file_not_written_when_everything_is_found(mocker: MockerFixture, in_tmp_dir: Path):
-    run_search_new_tracks(mocker, found={"a": SimpleNamespace(id=1)}, tracks=[make_track("a")])
-    assert not (in_tmp_dir / "songs not found.txt").exists()
+def test_not_found_report_empty_when_everything_is_found(mocker: MockerFixture):
+    _, not_found = run_search_new_tracks(mocker, found={"a": SimpleNamespace(id=1)}, tracks=[make_track("a")])
+    assert not_found.playlists == {}
 
 
 # Test ISRC lookup (I1)
@@ -338,7 +335,7 @@ def test_tidal_search_finds_track_by_isrc_without_text_search(failure_cache: moc
     wanted = tidal_track("ISRCa", name="Spelled Differently On Tidal")
     session = fake_tidal_session(albums=[], tracks=[])
     session.get_tracks_by_isrc.return_value = [wanted]
-    assert run_tidal_search(make_track("a"), session, _sync.IsrcLookup(session)) is wanted
+    assert run_tidal_search(make_track("a"), session, failure_cache, _sync.IsrcLookup(session)) is wanted
     session.get_tracks_by_isrc.assert_called_once_with("ISRCa")
     session.search.assert_not_called()
     failure_cache.remove_match_failure.assert_called_once_with("a")
@@ -348,7 +345,7 @@ def test_tidal_search_prefers_available_isrc_result(failure_cache: mock.Mock):
     unavailable, available = tidal_track("ISRCa", available=False), tidal_track("ISRCa")
     session = fake_tidal_session(albums=[], tracks=[])
     session.get_tracks_by_isrc.return_value = [unavailable, available]
-    assert run_tidal_search(make_track("a"), session, _sync.IsrcLookup(session)) is available
+    assert run_tidal_search(make_track("a"), session, failure_cache, _sync.IsrcLookup(session)) is available
 
 
 @pytest.mark.parametrize("isrc_result", [
@@ -361,7 +358,7 @@ def test_tidal_search_falls_back_to_text_search(failure_cache: mock.Mock, isrc_r
     session = fake_tidal_session(albums=[], tracks=[wanted])
     # an exception is raised; a list of return values is returned one call at a time
     session.get_tracks_by_isrc.side_effect = isrc_result if isinstance(isrc_result, Exception) else [isrc_result]
-    assert run_tidal_search(make_track("a"), session, _sync.IsrcLookup(session)) is wanted
+    assert run_tidal_search(make_track("a"), session, failure_cache, _sync.IsrcLookup(session)) is wanted
     session.search.assert_called()
 
 
@@ -370,7 +367,7 @@ def test_tidal_search_skips_isrc_lookup_without_isrc(failure_cache: mock.Mock):
     del spotify_track["external_ids"]
     wanted = tidal_track("other")
     session = fake_tidal_session(albums=[], tracks=[wanted])
-    assert run_tidal_search(spotify_track, session, _sync.IsrcLookup(session)) is wanted
+    assert run_tidal_search(spotify_track, session, failure_cache, _sync.IsrcLookup(session)) is wanted
     session.get_tracks_by_isrc.assert_not_called()
 
 
@@ -433,7 +430,7 @@ def test_search_query_uses_full_artist_name(failure_cache: mock.Mock):
     spotify_track = spotify_with_artists("Ken-Y")
     spotify_track["album"]["artists"] = [{"name": "Ken-Y"}]
     session = fake_tidal_session(albums=[], tracks=[])
-    run_tidal_search(spotify_track, session)
+    run_tidal_search(spotify_track, session, failure_cache)
     queries = [call.args[0] for call in session.search.call_args_list]
     assert queries == ["Album Ken-Y", "Song Ken-Y"]
 
@@ -525,20 +522,15 @@ def test_tidal_search_collects_candidates(failure_cache: mock.Mock):
     rejected = candidate(name="Other Tune", isrc="ISRCx")
     session = fake_tidal_session(albums=[], tracks=[rejected])
     candidates: List[Track] = []
-    asyncio.run(_sync.tidal_search(make_track("a"), RateLimiter(rate=10, capacity=10), session, None, candidates))
+    asyncio.run(_sync.tidal_search(make_track("a"), RateLimiter(rate=10, capacity=10), session, failure_cache, None, candidates))
     assert candidates == [rejected]
 
 
-def test_not_found_file_explains_closest_candidate(mocker: MockerFixture, in_tmp_dir: Path, failure_cache: mock.Mock):
-    def all_tracks_are_new(spotify_tracks: Sequence[SpotifyTrack]) -> List[SpotifyTrack]:
-        return list(spotify_tracks)
-
-    mocker.patch.object(_sync, "get_new_spotify_tracks", all_tracks_are_new)
-    mocker.patch.object(_sync, "track_match_cache")
+def test_not_found_report_explains_closest_candidate():
     session = fake_tidal_session(albums=[], tracks=[candidate(name="Other Tune", isrc="ISRCx", track_id=7)])
     session.get_tracks_by_isrc.side_effect = ObjectNotFound()
-    asyncio.run(_sync.search_new_tracks_on_tidal(session, [make_track("a")], "My Playlist", EMPTY_CONFIG))
+    context, not_found = new_context()
+    asyncio.run(_sync.search_new_tracks_on_tidal(context, session, [make_track("a")], "My Playlist"))
 
-    lines = (in_tmp_dir / "songs not found.txt").read_text(encoding="utf-8").splitlines()
-    entry = lines.index("a: Artist - Song")
-    assert lines[entry + 1] == "    closest on Tidal: Artist - Other Tune [7]: different ISRC, title differs"
+    assert not_found.playlists["My Playlist"] == ["a: Artist - Song\n    closest on Tidal: Artist - Other Tune [7]: different ISRC, title differs"]
+    assert context.failure_cache.has_match_failure("a")  # recorded in the context's store

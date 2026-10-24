@@ -2,7 +2,8 @@ import datetime
 import sqlalchemy
 from sqlalchemy import Table, Column, String, DateTime, MetaData, event, select, delete
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from typing import Any, Dict
+import threading
+from typing import Any, Dict, Tuple
 
 
 def _enable_write_ahead_log(dbapi_connection: Any, connection_record: Any):
@@ -10,6 +11,18 @@ def _enable_write_ahead_log(dbapi_connection: Any, connection_record: Any):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.close()
+
+
+def next_retry_time(insert_time: datetime.datetime | None = None) -> datetime.datetime:
+    """ When to search again for a track that failed to match, given when it first failed (None: it just did) """
+    first_interval = datetime.timedelta(days=7)
+    if insert_time:
+        # double interval on each retry. Never less than the first interval, e.g. if the same track
+        # failed twice in quick succession (a playlist containing it twice)
+        interval = max(first_interval, 2 * (datetime.datetime.now() - insert_time))
+    else:
+        interval = first_interval
+    return datetime.datetime.now() + interval
 
 
 class MatchFailureDatabase:
@@ -32,14 +45,7 @@ class MatchFailureDatabase:
         meta.create_all(self.engine)
 
     def _get_next_retry_time(self, insert_time: datetime.datetime | None = None) -> datetime.datetime:
-        first_interval = datetime.timedelta(days=7)
-        if insert_time:
-            # double interval on each retry. Never less than the first interval, e.g. if the same track
-            # failed twice in quick succession (a playlist containing it twice)
-            interval = max(first_interval, 2 * (datetime.datetime.now() - insert_time))
-        else:
-            interval = first_interval
-        return datetime.datetime.now() + interval
+        return next_retry_time(insert_time)
 
     def cache_match_failure(self, track_id: str):
         """ notifies that matching failed for the given track_id """
@@ -77,12 +83,39 @@ class MatchFailureDatabase:
                 connection.execute(statement)
 
 
+class InMemoryMatchFailureStore:
+    """ Match failures kept in memory, with the same retry back-off as MatchFailureDatabase. Thread-safe """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._failures: Dict[str, Tuple[datetime.datetime, datetime.datetime]] = {}  # track_id -> (insert_time, next_retry)
+
+    def cache_match_failure(self, track_id: str):
+        with self._lock:
+            existing = self._failures.get(track_id)
+            if existing:
+                self._failures[track_id] = (existing[0], next_retry_time(existing[0]))
+            else:
+                self._failures[track_id] = (datetime.datetime.now(), next_retry_time())
+
+    def has_match_failure(self, track_id: str) -> bool:
+        with self._lock:
+            failure = self._failures.get(track_id)
+        return failure is not None and failure[1] > datetime.datetime.now()
+
+    def remove_match_failure(self, track_id: str):
+        with self._lock:
+            self._failures.pop(track_id, None)
+
+
 class TrackMatchCache:
     """
-    Non-persistent mapping of spotify ids -> tidal_ids
+    Non-persistent mapping of spotify ids -> tidal_ids for one sync run
     This should NOT be accessed concurrently from multiple processes
     """
-    data: Dict[str, int] = {}
+
+    def __init__(self):
+        self.data: Dict[str, int] = {}
 
     def get(self, track_id: str) -> int | None:
         return self.data.get(track_id, None)
@@ -90,7 +123,3 @@ class TrackMatchCache:
     def insert(self, mapping: tuple[str, int]):
         self.data[mapping[0]] = mapping[1]
 
-
-# Main singleton instance
-failure_cache = MatchFailureDatabase()
-track_match_cache = TrackMatchCache()

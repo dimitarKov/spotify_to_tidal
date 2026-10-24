@@ -4,6 +4,11 @@
 from typing import Any, Iterable
 
 from . import exceptions as exceptions
+from .cache_handler import (
+    CacheFileHandler as CacheFileHandler,
+    CacheHandler as CacheHandler,
+    MemoryCacheHandler as MemoryCacheHandler,
+)
 from .exceptions import (
     SpotifyBaseException as SpotifyBaseException,
     SpotifyException as SpotifyException,
@@ -25,7 +30,7 @@ class SpotifyOAuth:
         requests_session: Any = True,
         requests_timeout: float | None = None,
         open_browser: bool = True,
-        cache_handler: Any = None,
+        cache_handler: CacheHandler | None = None,
     ) -> None: ...
     def get_access_token(self, code: str | None = None, as_dict: bool = True, check_cache: bool = True) -> Any: ...
 
