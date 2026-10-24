@@ -45,7 +45,7 @@ Each item gets its own branch (`fix/<id>-short-name`) and commit, with a unit te
 
 - [x] **I1. Look tracks up by ISRC first.** _(unit-tested; live test pending)_ One exact lookup before the album/track text searches; finds tracks Tidal spells differently and saves requests. (Verify `tidalapi` ISRC lookup works with our session/client.)
 - [x] **I2. Don't truncate artist names at hyphens.** `simple()` turns `Ken-Y` into `Ken`; use it for titles only, a gentler normaliser for artists.
-- [ ] **I3. Collect a "why didn't it match" report.** Record the closest candidate per missing track to make tuning easier.
+- [x] **I3. Collect a "why didn't it match" report.** Record the closest candidate per missing track to make tuning easier.
 - [x] **I4. Title matching is too loose.** `name_match` accepts the Spotify title anywhere inside the Tidal title, so "Song" matches "Different Song" (with same artist and duration ±2s). Match on word boundaries / similarity instead.
 
 ## Phase 4 — Prepare the core for a UI
